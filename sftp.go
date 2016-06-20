@@ -107,6 +107,7 @@ func (this *SecureFTP) GetList(path string) (res string) {
 	return ""
 }
 */
+
 func (this *SecureFTP) CreateDirectory(command *Command) {
 	err := this.sftpClient.Mkdir(command.Dest)
 	Err("CreateDirectory", err, this.CloseAll)
@@ -135,7 +136,6 @@ func (this *SecureFTP) Rename(command *Command) {
 }
 
 func (this *SecureFTP) UploadFile(command *Command) {
-
 	reader, err := os.Open(command.Src)
 	Err("UploadFile", err, this.CloseAll)
 	defer reader.Close()

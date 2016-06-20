@@ -1,9 +1,12 @@
 package sftps
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"log"
+)
 
 const (
-	DEBUG = false
+	DEBUG = true
 )
 
 type FtpParameter struct {
@@ -26,7 +29,7 @@ type SftpParameter struct {
 	Pass 						string
 	UseKey 					bool
 	PrivateKey 			string
-	UsePassphrase 	string
+	UsePassphrase 	bool
 	Passphrase			string
 }
 type Command struct {
@@ -38,33 +41,35 @@ type Command struct {
 
 type Sftps struct {
 	protocol 				string
-	ftpParameter 		FtpParameter
-	sftpParameter		SftpParameter
-	command 				Command
+	ftpParameter 		*FtpParameter
+	sftpParameter		*SftpParameter
+	command 				*Command
 }
 
 
-func NewSftps(proto string, ftpParam FtpParameter, sftpParam SftpParameter) (inst *Sftps) {
-	inst = &Sftps{proto, ftpParam, sftpParam}
+func NewSftps(proto string, ftpParam *FtpParameter, sftpParam *SftpParameter, cmd *Command) (inst *Sftps) {
+	log.Printf("%s", ftpParam.User)
+	inst = &Sftps{proto, ftpParam, sftpParam, cmd}
 	return
 }
 
 
-func (recv *Sftps) exec() {
+func (recv *Sftps) Exec() {
+	log.Printf(recv.protocol)
 	if recv.protocol == "FTP" || recv.protocol == "FTPS" {
-		recv.FtpCommand()
+		recv.ftpCommand()
 	} else if recv.protocol == "SFTP" {
-		recv.SftpCommand()
+		recv.sftpCommand()
 	}
 }
 
-func (recv *Sftps) FtpCommand() {
+func (recv *Sftps) ftpCommand() {
 	if recv.command.Cmd == "ConnectTest" {
 		recv.FtpConnectTest()
 	} else if recv.command.Cmd == "GetFileList" {
-		recv.FtpGetFileList()
+		recv.ftpGetFileList()
 	} else {
-		ftp := NewFTP(recv.ftpParameter, recv.command)
+		ftp := NewFTP(recv.ftpParameter, DEBUG)
 		ftp.Connect()
 		ftp.Auth()
 		ftp.BaseCommands()
@@ -88,23 +93,22 @@ func (recv *Sftps) FtpConnectTest() {
 	Last("ConnectTest", "OK", ftp.CloseAll)
 }
 
-func (recv *Sftps) FtpGetFileList() {
+func (recv *Sftps) ftpGetFileList() {
 	ftp := NewFTP(recv.ftpParameter, DEBUG)
 	ftp.Connect()
 	ftp.Auth()
 	ftp.BaseCommands()
 	list := ftp.GetList(recv.command.Dest)
-
 	entities, err := StringToEntities(list)
 	Err("GetFileList", err, ftp.CloseAll)
 	Last("GetFileList", entities, nil)
 }
 
-func (recv *Sftps) SftpCommand() {
+func (recv *Sftps) sftpCommand() {
 	if recv.command.Cmd == "ConnectTest" {
 		recv.SftpConnectTest()
 	} else if recv.command.Cmd == "GetFileList" {
-		recv.SftpGetFileList()
+		recv.sftpGetFileList()
 	} else {
 		sftp := NewSFTP(recv.sftpParameter, DEBUG)
 		sftp.ConnectAndAuth()
@@ -125,7 +129,7 @@ func (recv *Sftps) SftpConnectTest() {
 	Last("ConnectTest", "OK", sftp.CloseAll)
 }
 
-func (recv *Sftps) SftpGetFileList() {
+func (recv *Sftps) sftpGetFileList() {
 	sftp := NewSFTP(recv.sftpParameter, DEBUG)
 	sftp.ConnectAndAuth()
 	list := sftp.GetList(recv.command.Dest)

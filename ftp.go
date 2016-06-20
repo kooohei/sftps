@@ -33,7 +33,6 @@ func NewFTP(parameter *FtpParameter, debug bool) (ftp *FTP) {
 	ftp = new(FTP)
 	ftp.params = parameter
 	ftp.isDebug = debug
-
 	return
 }
 
@@ -116,6 +115,8 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config) {
 	rootPEM, err := ioutil.ReadFile("./cert/bundle.crt")
 	Err("", err, this.CloseAll)
 
+	log.Printf("%s\n%s", this.params.Cert, this.params.Key)
+
 	if this.params.Cert == "" {
 		this.params.Cert = "./cert/cert.pem"
 	}
@@ -124,8 +125,8 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config) {
 	}
 	certPair, err := tls.LoadX509KeyPair(this.params.Cert, this.params.Key)
 	Err("", err, this.CloseAll)
-
 	certPool := x509.NewCertPool()
+
 	if this.params.AlwaysTrust {
 		if !certPool.AppendCertsFromPEM(rootPEM) {
 			panic("Failed to parse root certificate")
@@ -148,6 +149,7 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config) {
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 	}
 	conf.InsecureSkipVerify = this.params.AlwaysTrust
+
 	return
 }
 
