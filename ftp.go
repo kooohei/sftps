@@ -112,32 +112,9 @@ func (this *FTP) SecureUpgrade() {
 	Get Configuration structure for the TLS Connection.
 */
 func (this *FTP) GetTLSConfig() (conf *tls.Config) {
-	rootPEM, err := ioutil.ReadFile("./cert/bundle.crt")
-	Err("", err, this.CloseAll)
 
-	log.Printf("%s\n%s", this.params.Cert, this.params.Key)
-
-	if this.params.Cert == "" {
-		this.params.Cert = "./cert/cert.pem"
-	}
-	if this.params.Key == "" {
-		this.params.Key = "./cert/key.pem"
-	}
-	certPair, err := tls.LoadX509KeyPair(this.params.Cert, this.params.Key)
-	Err("", err, this.CloseAll)
-	certPool := x509.NewCertPool()
-
-	if this.params.AlwaysTrust {
-		if !certPool.AppendCertsFromPEM(rootPEM) {
-			panic("Failed to parse root certificate")
-		}
-	}
 	conf = new(tls.Config)
-	conf.Certificates = make([]tls.Certificate, 1)
-	conf.Certificates[0] = certPair
-	conf.RootCAs = certPool
-	conf.ClientCAs = certPool
-	conf.ClientAuth = tls.VerifyClientCertIfGiven
+		conf.ClientAuth = tls.VerifyClientCertIfGiven
 	conf.CipherSuites = []uint16{
 		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
 		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
@@ -149,6 +126,23 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config) {
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 	}
 	conf.InsecureSkipVerify = this.params.AlwaysTrust
+	if this.params.Cert != "" && this.params.Key != "" {
+		rootPEM, err := ioutil.ReadFile("./cert/bundle.crt")
+		Err("", err, this.CloseAll)
+		certPair, err := tls.LoadX509KeyPair(this.params.Cert, this.params.Key)
+		Err("", err, this.CloseAll)
+		certPool := x509.NewCertPool()
+		
+		if this.params.AlwaysTrust {
+			if !certPool.AppendCertsFromPEM(rootPEM) {
+				panic("Failed to parse root certificate")
+			}
+		}
+		conf.Certificates = make([]tls.Certificate, 1)
+		conf.Certificates[0] = certPair
+		conf.RootCAs = certPool
+		conf.ClientCAs = certPool
+	}
 
 	return
 }
