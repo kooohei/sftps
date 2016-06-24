@@ -65,21 +65,29 @@ func (this *FTP) Auth() {
 	Connect
 	Connected to the server
 */
-func (this *FTP) Connect() {
-	ipaddr, err := net.LookupIP(this.params.Host)
-	Err("Connect", err, nil)
+func (this *FTP) Connect() error {
+	ipaddr, e := net.LookupIP(this.params.Host)
+	//Err("Connect", e, nil)
+	if e != nil {
+		return e
+	}
 	addr := fmt.Sprintf("%s:%d", ipaddr, this.params.Port)
 
-	this.rawConn, err = net.Dial("tcp", addr)
-	Err("Connect", err, nil)
+	this.rawConn, e = net.Dial("tcp", addr)
+	//Err("Connect", e, nil)
+	if e != nil {
+		return e
+	}
 	this.ctrlConn = textproto.NewConn(this.rawConn)
-	code, msg, err := this.ctrlConn.ReadResponse(220)
-	Err("Connect", err, this.CloseAll)
+	code, msg, e := this.ctrlConn.ReadResponse(220)
+	//Err("Connect", e, this.CloseAll)
+	if e != nil {
+		return e
+	}
 
 	if this.params.Secure && this.params.SecureMode == "implicit" {
 		this.SecureUpgrade()
 	}
-
 	if this.isDebug {
 		log.Printf("[RESPONSE] %d %s", code, msg)
 	}
@@ -111,10 +119,10 @@ func (this *FTP) SecureUpgrade() {
 	GetTLSConfig
 	Get Configuration structure for the TLS Connection.
 */
-func (this *FTP) GetTLSConfig() (conf *tls.Config) {
+func (this *FTP) GetTLSConfig() (conf *tls.Config, error) {
 
 	conf = new(tls.Config)
-		conf.ClientAuth = tls.VerifyClientCertIfGiven
+	conf.ClientAuth = tls.VerifyClientCertIfGiven
 	conf.CipherSuites = []uint16{
 		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
 		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
@@ -127,12 +135,18 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config) {
 	}
 	conf.InsecureSkipVerify = this.params.AlwaysTrust
 	if this.params.Cert != "" && this.params.Key != "" {
-		rootPEM, err := ioutil.ReadFile("./cert/bundle.crt")
-		Err("", err, this.CloseAll)
-		certPair, err := tls.LoadX509KeyPair(this.params.Cert, this.params.Key)
-		Err("", err, this.CloseAll)
+		rootPEM, e := ioutil.ReadFile("./cert/bundle.crt")
+		//Err("", e, this.CloseAll)
+		if e != nil {
+			return e
+		}
+		certPair, e := tls.LoadX509KeyPair(this.params.Cert, this.params.Key)
+		//Err("", e, this.CloseAll)
+		if e != nil {
+			return e
+		}
 		certPool := x509.NewCertPool()
-		
+
 		if this.params.AlwaysTrust {
 			if !certPool.AppendCertsFromPEM(rootPEM) {
 				panic("Failed to parse root certificate")
@@ -151,7 +165,7 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config) {
 	Command
 	Request FTP Command to the server then it will get response with code.
 */
-func (this *FTP) Command(cmd string, rc int) {
+func (this *FTP) Command(cmd string, rc int) error {
 	if this.isDebug {
 		log.Printf("[REQUEST COMMAND] %s\n", cmd)
 	}
@@ -160,9 +174,15 @@ func (this *FTP) Command(cmd string, rc int) {
 	Command := ary[0]
 
 	_, err := this.ctrlConn.Cmd(cmd)
-	Err(Command, err, this.CloseAll)
+	//Err(Command, err, this.CloseAll)
+	if err != nil {
+		return err
+	}
 	code, msg, err := this.ctrlConn.ReadResponse(rc)
-	Err(Command, err, this.CloseAll)
+	//Err(Command, err, this.CloseAll)
+	if err != nil {
+		return err
+	}
 	if this.isDebug {
 		log.Printf("[RESPONSE] %d %s\n", code, msg)
 	}
@@ -173,47 +193,74 @@ func (this *FTP) Command(cmd string, rc int) {
 	BaseCommands
 	Execute implicit commands. i,e that is between after authenticate and before user specify command.
 */
-func (this *FTP) BaseCommands() {
-	this.Command("SYST", 215)
-	this.Command("FEAT", 211)
-	this.Command("OPTS UTF8 ON", 200)
-	if this.params.Secure {
-		this.Command("PROT P", 200)
+func (this *FTP) BaseCommands() err error {
+	err = this.Command("SYST", 215)
+	if err != nil {
+		return
 	}
-	this.Command("TYPE I", 200)
+	err = this.Command("FEAT", 211)
+	if err != nil {
+		return
+	}
+	err = this.Command("OPTS UTF8 ON", 200)
+	if err != nil {
+		return	
+	}
+	if this.params.Secure {
+		err = this.Command("PROT P", 200)
+		if err != nil {
+			return
+		}
+	}
+	err = this.Command("TYPE I", 200)
+	return
 }
 
 /*
 	Port
 	"PORT 123,123,123,123,12,34", this command would send port number
 */
-func (this *FTP) Port() (listener net.Listener) {
+func (this *FTP) Port() (listener net.Listener) error {
 	localIP, err := GetLocalIP()
-
+	if err != nil {
+		return err
+	}
 	ip := strings.Replace(localIP, ".", ",", -1)
-	Err("Port", err, this.CloseAll)
+	//Err("Port", err, this.CloseAll)
 	port1, port2 := GetListenSplitPort(this.params.ListenPort)
 	_, err = this.ctrlConn.Cmd("PORT %s,%d,%d", ip, port1, port2)
-	Err("Port", err, this.CloseAll)
+	//Err("Port", err, this.CloseAll)
+	if err != nil {
+		return err
+	}
 	code, msg, err := this.ctrlConn.ReadResponse(200)
-	Err("Port", err, this.CloseAll)
+	//Err("Port", err, this.CloseAll)
+	if err != nil {
+		return err
+	}
 
 	if this.isDebug {
 		log.Printf("[RESPONSE] %d %s\n", code, msg)
 	}
 	listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.ListenPort))
-	Err("Port", err, this.CloseAll)
+	//Err("Port", err, this.CloseAll)
+	if err != nil {
+		return err
+	}
 	return
 }
 
 /*
 
  */
-func (this *FTP) ActiveReadBytes(listener net.Listener) (bytes []byte) {
+func (this *FTP) ActiveReadBytes(listener net.Listener) (bytes []byte, error) {
 	defer listener.Close()
 
 	dataConn, err := listener.Accept()
-	Err("", err, this.CloseAll)
+	//Err("", err, this.CloseAll)
+	if err != nil {
+		return err
+	}
 	defer dataConn.Close()
 	listener.Close()
 
@@ -221,15 +268,24 @@ func (this *FTP) ActiveReadBytes(listener net.Listener) (bytes []byte) {
 		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
 		defer dataTLS.Close()
 		bytes, err = ioutil.ReadAll(dataTLS)
-		Err("", err, this.CloseAll)
+		//Err("", err, this.CloseAll)
+		if err != nil {
+			return err
+		}
 		dataTLS.Close()
 	} else {
 		bytes, err = ioutil.ReadAll(dataConn)
-		Err("", err, this.CloseAll)
+		//Err("", err, this.CloseAll)
+		if err != nil {
+			return err
+		}
 	}
 	dataConn.Close()
 	code, msg, err := this.ctrlConn.ReadResponse(226)
-	Err("", err, this.CloseAll)
+	//Err("", err, this.CloseAll)
+	if err !=  nil {
+		return err
+	}
 	if this.isDebug {
 		log.Printf("[RESPONSE] %d %s", code, msg)
 	}
@@ -239,7 +295,7 @@ func (this *FTP) ActiveReadBytes(listener net.Listener) (bytes []byte) {
 /*
 
  */
-func (this *FTP) FileToActiveConn(filePath string, listener net.Listener) {
+func (this *FTP) FileToActiveConn(filePath string, listener net.Listener, error) {
 	defer listener.Close()
 	dataConn, err := listener.Accept()
 	Err("", err, this.CloseAll)

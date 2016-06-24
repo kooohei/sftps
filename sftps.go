@@ -10,42 +10,40 @@ const (
 )
 
 type FtpParameter struct {
-	Host 						string
-	Port 						int
-	ListenPort 			int
-	User 						string
-	Pass 						string
-	Passive 				bool
-	Secure 					bool
-	AlwaysTrust			bool
-	SecureMode			string
-	Cert 						string
-	Key 						string
+	Host        string
+	Port        int
+	ListenPort  int
+	User        string
+	Pass        string
+	Passive     bool
+	Secure      bool
+	AlwaysTrust bool
+	SecureMode  string
+	Cert        string
+	Key         string
 }
 type SftpParameter struct {
-	Host 						string
-	Port 						int
-	User 						string
-	Pass 						string
-	UseKey 					bool
-	PrivateKey 			string
-	UsePassphrase 	bool
-	Passphrase			string
+	Host          string
+	Port          int
+	User          string
+	Pass          string
+	UseKey        bool
+	PrivateKey    string
+	UsePassphrase bool
+	Passphrase    string
 }
 type Command struct {
-	Cmd 						string
-	Src 						string
-	Dest 						string
+	Cmd  string
+	Src  string
+	Dest string
 }
-
 
 type Sftps struct {
-	protocol 				string
-	ftpParameter 		*FtpParameter
-	sftpParameter		*SftpParameter
-	command 				*Command
+	protocol      string
+	ftpParameter  *FtpParameter
+	sftpParameter *SftpParameter
+	command       *Command
 }
-
 
 func NewSftps(proto string, ftpParam *FtpParameter, sftpParam *SftpParameter, cmd *Command) (inst *Sftps) {
 	log.Printf("%s", ftpParam.User)
@@ -53,29 +51,29 @@ func NewSftps(proto string, ftpParam *FtpParameter, sftpParam *SftpParameter, cm
 	return
 }
 
-
-func (recv *Sftps) Exec() {
+func (recv *Sftps) Exec() (res interface{}, err error) {
 	log.Printf(recv.protocol)
 	if recv.protocol == "FTP" || recv.protocol == "FTPS" {
-		recv.ftpCommand()
+		res, err = recv.ftpCommand()
 	} else if recv.protocol == "SFTP" {
 		recv.sftpCommand()
 	}
+	return
 }
 
-func (recv *Sftps) ftpCommand() {
+func (recv *Sftps) ftpCommand() (res interface{}, err error) {
 	if recv.command.Cmd == "ConnectTest" {
 		recv.FtpConnectTest()
 	} else if recv.command.Cmd == "GetFileList" {
-		recv.ftpGetFileList()
+		res, err = recv.ftpGetFileList()
 	} else {
 		ftp := NewFTP(recv.ftpParameter, DEBUG)
 		ftp.Connect()
 		ftp.Auth()
 		ftp.BaseCommands()
 
-		funcs := map[string]interface{} {
-			"DownlloadFile":		ftp.DownloadFile,
+		funcs := map[string]interface{}{
+			"DownlloadFile":   ftp.DownloadFile,
 			"UploadFile":      ftp.UploadFile,
 			"RemoveFile":      ftp.RemoveFile,
 			"CreateDirectory": ftp.CreateDirectory,
@@ -84,6 +82,7 @@ func (recv *Sftps) ftpCommand() {
 		}
 		ftp.Call(funcs, recv.command.Cmd, recv.command)
 	}
+	return
 }
 
 func (recv *Sftps) FtpConnectTest() {
@@ -93,15 +92,23 @@ func (recv *Sftps) FtpConnectTest() {
 	Last("ConnectTest", "OK", ftp.CloseAll)
 }
 
-func (recv *Sftps) ftpGetFileList() {
+func (recv *Sftps) ftpGetFileList() (list string, err error) {
 	ftp := NewFTP(recv.ftpParameter, DEBUG)
-	ftp.Connect()
+	err = ftp.Connect()
+	if err != nil {
+		return
+	}
 	ftp.Auth()
 	ftp.BaseCommands()
-	list := ftp.GetList(recv.command.Dest)
-	entities, err := StringToEntities(list)
-	Err("GetFileList", err, ftp.CloseAll)
-	Last("GetFileList", entities, nil)
+	list = ftp.GetList(recv.command.Dest)
+	//Err("GetFileList", err, ftp.CloseAll)
+	//Last("GetFileList", entities, nil)
+	return
+}
+
+func (recv *Sftps) StringToEntities(raw string) (ents []*Entity, err error) {
+	ents, err = StringToEntities(raw)
+	return
 }
 
 func (recv *Sftps) sftpCommand() {
@@ -113,7 +120,7 @@ func (recv *Sftps) sftpCommand() {
 		sftp := NewSFTP(recv.sftpParameter, DEBUG)
 		sftp.ConnectAndAuth()
 
-		funcs := map[string]interface{} {
+		funcs := map[string]interface{}{
 			"CreateDirectory": sftp.CreateDirectory,
 			"Rename":          sftp.Rename,
 			"UploadFile":      sftp.UploadFile,
