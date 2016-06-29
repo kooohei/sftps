@@ -3,123 +3,112 @@ package sftps
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/textproto"
 	"os"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	//"github.com/davecgh/go-spew/spew"
 )
 
-// FTP
-// Structure of the this Module.
-type FTP struct {
+type FtpParameters struct {
+	Host        string
+	Port        int
+	ListenPort  int
+	User        string
+	Pass        string
+	Passive     bool
+	KeepAlive   bool
+	Secure      bool
+	AlwaysTrust bool
+	SecureMode  int
+	RootCA      string
+	Cert        string
+	Key         string
+}
+
+type Ftp struct {
 	rawConn  net.Conn
-	ctrlConn *textproto.Conn
 	tlsConn  *tls.Conn
-	params   *FtpParameter
-	isDebug  bool
+	ctrlConn *textproto.Conn
+	params   *FtpParameters
+	State    int
 }
 
-/*
-	NewFTP is the Factory Metrhod, Create instance for the FTP Connection.
-*/
-func NewFTP(parameter *FtpParameter, debug bool) (ftp *FTP) {
-	ftp = new(FTP)
-	ftp.params = parameter
-	ftp.isDebug = debug
+func NewFtp(p *FtpParameters) (ftp *Ftp) {
+
+	ftp = new(Ftp)
+	ftp.params = p
+	ftp.State = OFFLINE
 	return
 }
 
-func (this *FTP) Call(m map[string]interface{}, name string, params ...interface{}) {
-	f := reflect.ValueOf(m[name])
-	in := make([]reflect.Value, len(params))
-	for k, param := range params {
-		in[k] = reflect.ValueOf(param)
-	}
-	f.Call(in)
-	return
-}
+func (this *Ftp) connect() (res *Response, err error) {
+	var ipaddr []net.IP
+	var code int
+	var msg string
 
-/*
-	Auth()
-	Authentication process
-*/
-func (this *FTP) Auth() {
-	if this.params.Secure && this.params.SecureMode == "explicit" {
-		this.Command("AUTH TLS", 234)
-		this.SecureUpgrade()
+	if ipaddr, err = net.LookupIP(this.params.Host); err != nil {
+		return
 	}
-	this.Command(fmt.Sprintf("USER %s", this.params.User), 331)
-	if this.params.Pass != "" {
-		this.Command(fmt.Sprintf("PASS %s", this.params.Pass), 230)
-	}
-}
 
-/*
-	Connect
-	Connected to the server
-*/
-func (this *FTP) Connect() error {
-	ipaddr, e := net.LookupIP(this.params.Host)
-	//Err("Connect", e, nil)
-	if e != nil {
-		return e
-	}
-	addr := fmt.Sprintf("%s:%d", ipaddr, this.params.Port)
+	addr := fmt.Sprintf("%s:%d", ipaddr[0], this.params.Port)
 
-	this.rawConn, e = net.Dial("tcp", addr)
-	//Err("Connect", e, nil)
-	if e != nil {
-		return e
+	dialer := new(net.Dialer)
+	if dialer.Timeout, err = time.ParseDuration(TIMEOUT); err != nil {
+		return
+	}
+	if dialer.KeepAlive, err = time.ParseDuration(KEEPALIVE); err != nil {
+		return
+	}
+	this.rawConn, err = dialer.Dial("tcp", addr)
+	if err != nil {
+
+		return
 	}
 	this.ctrlConn = textproto.NewConn(this.rawConn)
-	code, msg, e := this.ctrlConn.ReadResponse(220)
-	//Err("Connect", e, this.CloseAll)
-	if e != nil {
-		return e
+	if code, msg, err = this.ctrlConn.ReadResponse(220); err != nil {
+
+		return
 	}
 
-	if this.params.Secure && this.params.SecureMode == "implicit" {
-		this.SecureUpgrade()
+	res = &Response{
+		command: "",
+		code:    code,
+		msg:     msg,
 	}
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
+
+	if this.params.Secure && this.params.SecureMode == IMPLICIT {
+		if err = this.secureUpgrade(); err != nil {
+			return
+		}
 	}
+
+	this.State = ONLINE
 	return
 }
 
-func (this *FTP) CloseAll() {
-	if this.ctrlConn != nil {
-		this.ctrlConn.Close()
+func (this *Ftp) secureUpgrade() (err error) {
+	var conf *tls.Config
+	if conf, err = this.getTLSConfig(); err != nil {
+		return
 	}
-	if this.tlsConn != nil {
-		this.tlsConn.Close()
-	}
-	if this.rawConn != nil {
-		this.rawConn.Close()
-	}
-}
-
-/*
-	Upgrade the Secure Control connection with TLS
-*/
-func (this *FTP) SecureUpgrade() {
-	conf := this.GetTLSConfig()
 	this.tlsConn = tls.Client(this.rawConn, conf)
 	this.ctrlConn = textproto.NewConn(this.tlsConn)
+	return
 }
 
-/*
-	GetTLSConfig
-	Get Configuration structure for the TLS Connection.
-*/
-func (this *FTP) GetTLSConfig() (conf *tls.Config, error) {
+func (this *Ftp) getTLSConfig() (conf *tls.Config, err error) {
+	var certPair tls.Certificate
+	var certPool *x509.CertPool
+	var rcaPem []byte
 
 	conf = new(tls.Config)
 	conf.ClientAuth = tls.VerifyClientCertIfGiven
@@ -133,513 +122,121 @@ func (this *FTP) GetTLSConfig() (conf *tls.Config, error) {
 		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 	}
-	conf.InsecureSkipVerify = this.params.AlwaysTrust
-	if this.params.Cert != "" && this.params.Key != "" {
-		rootPEM, e := ioutil.ReadFile("./cert/bundle.crt")
-		//Err("", e, this.CloseAll)
-		if e != nil {
-			return e
-		}
-		certPair, e := tls.LoadX509KeyPair(this.params.Cert, this.params.Key)
-		//Err("", e, this.CloseAll)
-		if e != nil {
-			return e
-		}
-		certPool := x509.NewCertPool()
 
-		if this.params.AlwaysTrust {
-			if !certPool.AppendCertsFromPEM(rootPEM) {
-				panic("Failed to parse root certificate")
-			}
+	if this.params.Cert != "" && this.params.Key != "" {
+		if certPair, err = tls.LoadX509KeyPair(this.params.Cert, this.params.Key); err != nil {
+			return
 		}
+
+		certPool = x509.NewCertPool()
+
+		if this.params.RootCA != "" {
+			if rcaPem, err = ioutil.ReadFile("./cert/rcaPem.pem"); err != nil {
+				return
+			}
+
+			if this.params.AlwaysTrust {
+				if !certPool.AppendCertsFromPEM(rcaPem) {
+					panic("Failed to parse the Root Certificate")
+				}
+			}
+			conf.RootCAs = certPool
+		}
+
 		conf.Certificates = make([]tls.Certificate, 1)
 		conf.Certificates[0] = certPair
-		conf.RootCAs = certPool
 		conf.ClientCAs = certPool
 	}
-
+	conf.InsecureSkipVerify = this.params.AlwaysTrust
 	return
 }
 
-/*
-	Command
-	Request FTP Command to the server then it will get response with code.
-*/
-func (this *FTP) Command(cmd string, rc int) error {
-	if this.isDebug {
-		log.Printf("[REQUEST COMMAND] %s\n", cmd)
-	}
+func (this *Ftp) auth() (res []*Response, err error) {
 
-	ary := strings.Split(cmd, " ")
-	Command := ary[0]
+	var r *Response
 
-	_, err := this.ctrlConn.Cmd(cmd)
-	//Err(Command, err, this.CloseAll)
-	if err != nil {
-		return err
-	}
-	code, msg, err := this.ctrlConn.ReadResponse(rc)
-	//Err(Command, err, this.CloseAll)
-	if err != nil {
-		return err
-	}
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s\n", code, msg)
-	}
-	return
-}
+	res = []*Response{}
 
-/*
-	BaseCommands
-	Execute implicit commands. i,e that is between after authenticate and before user specify command.
-*/
-func (this *FTP) BaseCommands() err error {
-	err = this.Command("SYST", 215)
-	if err != nil {
-		return
-	}
-	err = this.Command("FEAT", 211)
-	if err != nil {
-		return
-	}
-	err = this.Command("OPTS UTF8 ON", 200)
-	if err != nil {
-		return	
-	}
-	if this.params.Secure {
-		err = this.Command("PROT P", 200)
-		if err != nil {
+	if this.params.Secure && this.params.SecureMode == EXPLICIT {
+		if r, err = this.Command("AUTH TLS", 234); err != nil {
+			return
+		}
+		res = append(res, r)
+
+		if err = this.secureUpgrade(); err != nil {
 			return
 		}
 	}
-	err = this.Command("TYPE I", 200)
+
+	if r, err = this.Command(fmt.Sprintf("USER %s", this.params.User), 331); err != nil {
+		return
+	}
+	res = append(res, r)
+
+	if r, err = this.Command(fmt.Sprintf("PASS %s", this.params.Pass), 230); err != nil {
+		return
+	}
+	res = append(res, r)
+
 	return
 }
 
-/*
-	Port
-	"PORT 123,123,123,123,12,34", this command would send port number
-*/
-func (this *FTP) Port() (listener net.Listener) error {
-	localIP, err := GetLocalIP()
-	if err != nil {
-		return err
-	}
-	ip := strings.Replace(localIP, ".", ",", -1)
-	//Err("Port", err, this.CloseAll)
-	port1, port2 := GetListenSplitPort(this.params.ListenPort)
-	_, err = this.ctrlConn.Cmd("PORT %s,%d,%d", ip, port1, port2)
-	//Err("Port", err, this.CloseAll)
-	if err != nil {
-		return err
-	}
-	code, msg, err := this.ctrlConn.ReadResponse(200)
-	//Err("Port", err, this.CloseAll)
-	if err != nil {
-		return err
+
+func (this *Ftp) Command(cmd string, code int) (res *Response, err error) {
+	var c int
+	var m string
+
+	if _, err = this.ctrlConn.Cmd(cmd); err != nil {
+		return
 	}
 
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s\n", code, msg)
+	if c, m, err = this.ctrlConn.ReadResponse(code); err != nil {
+		return
 	}
-	listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.ListenPort))
-	//Err("Port", err, this.CloseAll)
-	if err != nil {
-		return err
+
+	res = &Response{
+		command: cmd,
+		code:    c,
+		msg:     m,
 	}
 	return
 }
 
-/*
-
- */
-func (this *FTP) ActiveReadBytes(listener net.Listener) (bytes []byte, error) {
-	defer listener.Close()
-
-	dataConn, err := listener.Accept()
-	//Err("", err, this.CloseAll)
-	if err != nil {
-		return err
+func (this *Ftp) options() (res []*Response, err error) {
+	var r *Response
+	if r, err = this.Command("SYST", 215); err != nil {
+		return
 	}
-	defer dataConn.Close()
-	listener.Close()
+	res = []*Response{}
+	res = append(res, r)
+
+	if r, err = this.Command("FEAT", 211); err != nil {
+		return
+	}
+	res = append(res, r)
+
+	if r, err = this.Command("OPTS UTF8 ON", 200); err != nil {
+		return
+	}
+	res = append(res, r)
 
 	if this.params.Secure {
-		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
-		defer dataTLS.Close()
-		bytes, err = ioutil.ReadAll(dataTLS)
-		//Err("", err, this.CloseAll)
-		if err != nil {
-			return err
+		if r, err = this.Command("PROT P", 200); err != nil {
+			return
 		}
-		dataTLS.Close()
-	} else {
-		bytes, err = ioutil.ReadAll(dataConn)
-		//Err("", err, this.CloseAll)
-		if err != nil {
-			return err
-		}
+		res = append(res, r)
 	}
-	dataConn.Close()
-	code, msg, err := this.ctrlConn.ReadResponse(226)
-	//Err("", err, this.CloseAll)
-	if err !=  nil {
-		return err
+	if r, err = this.Command("TYPE I", 200); err != nil {
+		return
 	}
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
-	}
+	res = append(res, r)
 	return
 }
 
-/*
 
- */
-func (this *FTP) FileToActiveConn(filePath string, listener net.Listener, error) {
-	defer listener.Close()
-	dataConn, err := listener.Accept()
-	Err("", err, this.CloseAll)
-	defer dataConn.Close()
-	listener.Close()
-
-	file, err := os.Open(filePath)
-	Err("", err, this.CloseAll)
-	defer file.Close()
-
-	var writeLen int64
-	if this.params.Secure {
-		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
-		defer dataTLS.Close()
-		writeLen, err = io.Copy(dataTLS, file)
-		Err("", err, this.CloseAll)
-	} else {
-		writeLen, err = io.Copy(dataConn, file)
-		Err("", err, this.CloseAll)
-	}
-	dataConn.Close()
-	code, msg, err := this.ctrlConn.ReadResponse(226)
-	Err("", err, this.CloseAll)
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
-		log.Printf("[DATA TRANSFER] COMPLETE %d bytes", writeLen)
-	}
-	return
-}
-
-/*
-
- */
-func (this *FTP) ActiveConnToFile(filePath string, listener net.Listener) {
-	defer listener.Close()
-	dataConn, err := listener.Accept()
-	Err("DownloadFile", err, this.CloseAll)
-	defer dataConn.Close()
-	listener.Close()
-
-	file, err := os.Create(filePath)
-	Err("DownloadFile", err, this.CloseAll)
-	defer file.Close()
-
-	var writeLen int64
-	if this.params.Secure {
-		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
-		defer dataTLS.Close()
-		writeLen, err = io.Copy(file, dataTLS)
-		Err("DownloadFile", err, this.CloseAll)
-	} else {
-		writeLen, err = io.Copy(file, dataConn)
-		Err("DownloadFile", err, this.CloseAll)
-	}
-	dataConn.Close()
-	code, msg, err := this.ctrlConn.ReadResponse(226)
-	Err("DownloadFile", err, this.CloseAll)
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
-		log.Printf("[DATA TRANSFER] COMPLETE %d bytes", writeLen)
-	}
-	return
-}
-
-/*
-	Pasv
-	Execute user decided command after the PASV command.
-	the result from server via the data connection.
-*/
-func (this *FTP) Pasv() (dataConn net.Conn) {
-	_, err := this.ctrlConn.Cmd("PASV")
-	Err("Pasv", err, this.CloseAll)
-	code, msg, err := this.ctrlConn.ReadResponse(227)
-	Err("Pasv", err, this.CloseAll)
-
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s\n", code, msg)
-	}
-
-	ip, err := net.LookupIP(this.params.Host)
-	Err("Pasv", err, this.CloseAll)
-	reg := regexp.MustCompile("([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+)")
-	res := reg.FindAllStringSubmatch(msg, -1)
-	tmp := res[0]
-
-	hex1 := DecString2HexString(tmp[5])
-	hex2 := DecString2HexString(tmp[6])
-	port := HexString2Int(fmt.Sprintf("%s%s", hex1, hex2))
-	param := fmt.Sprintf("%s:%d", ip[0], port)
-	dataConn, err = net.Dial("tcp", param)
-	Err("Pasv", err, this.CloseAll)
-
-	return dataConn
-}
-
-/*
-	PasvReadBytes
-	Read data of the []byte type from data connection with Passive mode.
-*/
-func (this *FTP) PasvReadBytes(dataConn net.Conn) (bytes []byte) {
-	var err error
-	if this.params.Secure {
-		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
-		defer dataTLS.Close()
-		bytes, err = ioutil.ReadAll(dataTLS)
-		Err("", err, this.CloseAll)
-		dataTLS.Close()
-	} else {
-		bytes, err = ioutil.ReadAll(dataConn)
-		Err("", err, this.CloseAll)
-	}
-
-	dataConn.Close()
-	code, msg, err := this.ctrlConn.ReadResponse(226)
-	Err("", err, this.CloseAll)
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
-	}
-	return
-}
-
-/*
-
- */
-func (this *FTP) FileToPasvConn(filePath string, dataConn net.Conn) {
-	defer dataConn.Close()
-
-	file, err := os.Open(filePath)
-	Err("UploadFile", err, this.CloseAll)
-	defer file.Close()
-
-	var writeLen int64
-	if this.params.Secure {
-		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
-		defer dataTLS.Close()
-		writeLen, err = io.Copy(dataTLS, file)
-		Err("UploadFile", err, this.CloseAll)
-	} else {
-		writeLen, err = io.Copy(dataConn, file)
-		Err("UploadFile", err, this.CloseAll)
-	}
-
-	dataConn.Close()
-	code, msg, err := this.ctrlConn.ReadResponse(226)
-	Err("UploadFile", err, this.CloseAll)
-
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
-		log.Printf("[DATA TRANSFER] COMPLETE %d bytes", writeLen)
-	}
-	return
-}
-
-/*
-
- */
-func (this *FTP) PasvConnToFile(filePath string, dataConn net.Conn) {
-	defer dataConn.Close()
-
-	file, err := os.Create(filePath)
-	Err("", err, this.CloseAll)
-	defer file.Close()
-
-	var writeLen int64
-	if this.params.Secure {
-		dataTLS := tls.Client(dataConn, this.GetTLSConfig())
-		defer dataTLS.Close()
-		writeLen, err = io.Copy(file, dataTLS)
-		Err("DownloadFile", err, this.CloseAll)
-	} else {
-		writeLen, err = io.Copy(file, dataConn)
-		Err("DownloadFile", err, this.CloseAll)
-	}
-
-	dataConn.Close()
-	code, msg, err := this.ctrlConn.ReadResponse(226)
-	Err("DownloadFile", err, this.CloseAll)
-
-	if this.isDebug {
-		log.Printf("[RESPONSE] %d %s", code, msg)
-		log.Printf("[DATA TRANSFER] COMPLETE %d bytes", writeLen)
-	}
-	return
-}
-
-/*
-	GetList
-	Get file list from passed directory path
-*/
-func (this *FTP) GetList(path string) string {
-	var bytes []byte
-	cmd := fmt.Sprintf("LIST -aL %s", path)
-	if this.params.Passive {
-		dataConn := this.Pasv()
-		this.Command(cmd, 150)
-		bytes = this.PasvReadBytes(dataConn)
-		if this.isDebug {
-			log.Printf("[RESPONSE DATA] %v", string(bytes))
-		}
-	} else {
-		listener := this.Port()
-		this.Command(cmd, 150)
-		bytes = this.ActiveReadBytes(listener)
-		if this.isDebug {
-			log.Printf("[RESPONSE DATA] %v", string(bytes))
-		}
-	}
-	return string(bytes)
-}
-
-/*
-	UploadFile
-*/
-func (this *FTP) UploadFile(command *Command) {
-	localPath := command.Src
-	remotePath := command.Dest
-
-	cmd := fmt.Sprintf("STOR %s", remotePath)
-	if this.params.Passive {
-		dataConn := this.Pasv()
-		this.Command(cmd, 150)
-		this.FileToPasvConn(localPath, dataConn)
-	} else {
-		listener := this.Port()
-		this.Command(cmd, 150)
-		this.FileToActiveConn(localPath, listener)
-	}
-	Last("UploadFile", "OK", this.CloseAll)
-}
-
-/*
-
- */
-func (this *FTP) DownloadFile(command *Command) {
-	localPath := command.Src
-	remotePath := command.Dest
-
-	cmd := fmt.Sprintf("RETR %s", remotePath)
-	if this.params.Passive {
-		dataConn := this.Pasv()
-		this.Command(cmd, 150)
-		this.PasvConnToFile(localPath, dataConn)
-	} else {
-		listener := this.Port()
-		this.Command(cmd, 150)
-		this.ActiveConnToFile(localPath, listener)
-	}
-	Last("DownloadFile", "OK", this.CloseAll)
-}
-
-/*
-
- */
-func (this *FTP) Rename(command *Command) {
-	oldName := command.Src
-	newName := command.Dest
-
-	fr := fmt.Sprintf("RNFR %s", oldName)
-	to := fmt.Sprintf("RNTO %s", newName)
-
-	this.Command(fr, 350)
-	this.Command(to, 250)
-
-	Last("Rename", "OK", this.CloseAll)
-}
-
-/*
-
- */
-func (this *FTP) RemoveFile(command *Command) {
-	filePath := command.Dest
-
-	cmd := fmt.Sprintf("DELE %s", filePath)
-	this.Command(cmd, 250)
-	Last("RemoveFile", "OK", this.CloseAll)
-}
-
-/*
-	CreateDirectory
-	Create directory to the server
-*/
-func (this *FTP) CreateDirectory(command *Command) {
-	path := command.Dest
-
-	cmd := fmt.Sprintf("MKD %s", path)
-	this.Command(cmd, 257)
-	Last("CreateDirectory", "OK", this.CloseAll)
-}
-
-/*
-	RemoveDirectory
-	Delete specified directory from server.
-*/
-func (this *FTP) RemoveDirectory(command *Command) {
-	path := command.Dest
-
-	cmd := fmt.Sprintf("RMD %s", path)
-	this.Command(cmd, 250)
-	Last("RemoveDirectory", "OK", this.CloseAll)
-}
-
-/*
-
- */
-func (this *FTP) Quit() {
-	this.Command("Quit", 221)
-	defer this.ctrlConn.Close()
-	defer this.tlsConn.Close()
-	defer this.rawConn.Close()
-}
-
-/*
-	GetListenSplitPort
-	Get numbers for PORT command
-*/
-func GetListenSplitPort(port int) (port1 int, port2 int) {
-	hex := fmt.Sprintf("%x", port)
-	switch len(hex) {
-	case 1:
-	case 2:
-		port1 = 0
-		port2 = HexString2Int(hex)
-	case 3:
-		p1 := hex[0:1]
-		p2 := hex[1:3]
-		port1 = HexString2Int(p1)
-		port2 = HexString2Int(p2)
-	case 4:
-		p1 := hex[0:2]
-		p2 := hex[2:4]
-		port1 = HexString2Int(p1)
-		port2 = HexString2Int(p2)
-	}
-	return
-}
-
-/*
-	GetLocalIP
-	Return IP address of the local machine
-*/
-func GetLocalIP() (ip string, err error) {
+func (this *Ftp) getLocalIP() (ip string, err error) {
 	var addrs []net.Addr
-	addrs, err = net.InterfaceAddrs()
-	if err != nil {
+	if addrs, err = net.InterfaceAddrs(); err != nil {
 		return
 	}
 	for _, addr := range addrs {
@@ -649,42 +246,277 @@ func GetLocalIP() (ip string, err error) {
 			}
 		}
 	}
+	if ip == "" {
+		err = errors.New("Could not get the Local Address.")
+		return
+	}
 	return
 }
 
-/*
-	Decimal of the string type to decimal of the integer type.
-*/
-/*
-func DecString2Int(str string) (res int) {
-	r, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+func (this *Ftp) ds2h(dec string) (hex string, err error) {
+	var p int = 0
+	if p, err = strconv.Atoi(dec); err != nil {
+		return
 	}
+	hex = fmt.Sprintf("%x", p)
+	return
+}
+
+func (this *Ftp) h2i(hex string) (res int, err error) {
+	var r int64
+	r, err = strconv.ParseInt(hex, 16, 64)
 	res = int(r)
 	return
 }
-*/
 
-/*
-	Decimal of the string type to Hexadecimal of the string type.
-*/
-func DecString2HexString(dec string) string {
-	p, err := strconv.Atoi(dec)
-	if err != nil {
-		panic(err)
-	}
-	return fmt.Sprintf("%x", p)
-}
+func (this *Ftp) getSplitPorts() (port1 int, port2 int, err error) {
+	hex := fmt.Sprintf("%x", this.params.Port)
 
-/*
-	Hexadecimal of the string type to decimal of the integer type.
-*/
-func HexString2Int(hex string) (res int) {
-	r, err := strconv.ParseInt(hex, 16, 64)
-	if err != nil {
-		panic(err)
+	switch len(hex) {
+	case 1, 2:
+		port1 = 0
+		if port2, err = this.h2i(hex); err != nil {
+			return
+		}
+	case 3:
+		p1 := hex[:1]
+		p2 := hex[1:3]
+		if port1, err = this.h2i(p1); err != nil {
+			return
+		}
+		if port2, err = this.h2i(p2); err != nil {
+			return
+		}
+	case 4:
+		p1 := hex[:2]
+		p2 := hex[2:4]
+		if port1, err = this.h2i(p1); err != nil {
+			return
+		}
+		if port2, err = this.h2i(p2); err != nil {
+			return
+		}
+	default:
+		err = errors.New("The Port Number could not converted to the Parameter Format for the Listen Function.")
 	}
-	res = int(r)
 	return
 }
+
+func (this *Ftp) Port() (res *Response, dataConn net.Conn, err error) {
+	var localIP string = ""
+	if localIP, err = this.getLocalIP(); err != nil {
+		return
+	}
+	ip := strings.Replace(localIP, ".", ",", -1)
+	var p1, p2 int
+	if p1, p2, err = this.getSplitPorts(); err != nil {
+		return
+	}
+	cmd := fmt.Sprintf("PORT %s,%d,%d", ip, p1, p2)
+
+	if res, err = this.Command(cmd, 200); err != nil {
+		return
+	}
+
+	listener, e := net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.ListenPort))
+	defer listener.Close()
+
+	if e != nil {
+		return
+	}
+	if dataConn, err = listener.Accept(); err != nil {
+		return
+	}
+	return
+}
+
+func (this *Ftp) Pasv() (res *Response, dataConn net.Conn, err error) {
+	if res, err = this.Command("PASV", 227); err != nil {
+		return
+	}
+	var ip []net.IP
+	if ip, err = net.LookupIP(this.params.Host); err != nil {
+		return
+	}
+	reg := regexp.MustCompile("([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+)")
+	matches := reg.FindAllStringSubmatch(res.msg, -1)
+	tmp := matches[0]
+
+	var hex1 string = ""
+	var hex2 string = ""
+	if hex1, err = this.ds2h(tmp[5]); err != nil {
+		return
+	}
+	if hex2, err = this.ds2h(tmp[6]); err != nil {
+		return
+	}
+	var port int
+	if port, err = this.h2i(fmt.Sprintf("%s%s", hex1, hex2)); err != nil {
+		return
+	}
+	param := fmt.Sprintf("%s:%d", ip[0], port)
+	dataConn, err = net.Dial("tcp", param)
+	return
+}
+
+
+func (this *Ftp) readBytes(dataConn net.Conn) (res *Response, bytes []byte, err error) {
+	defer dataConn.Close()
+	if this.params.Secure {
+		var conf *tls.Config
+		if conf, err = this.getTLSConfig(); err != nil {
+			return
+		}
+		dataTLS := tls.Client(dataConn, conf)
+		defer dataTLS.Close()
+
+		if bytes, err = ioutil.ReadAll(dataTLS); err != nil {
+			return
+		}
+		dataTLS.Close() // Important the Buffer flush out.
+
+	} else {
+		if bytes, err = ioutil.ReadAll(dataConn); err != nil {
+			return
+		}
+		dataConn.Close() // Important the Buffer flush out.
+	}
+
+	c, m, e := this.ctrlConn.ReadResponse(226)
+	if e != nil {
+		err = e
+		return
+	}
+	res = &Response{
+		command: "",
+		code:    c,
+		msg:     m,
+	}
+	return
+}
+
+func (this *Ftp) quit() (res *Response, err error) {
+	defer this.ctrlConn.Close()
+	defer this.tlsConn.Close()
+	defer this.rawConn.Close()
+
+	if res, err = this.Command("QUIT", 221); err != nil {
+		return
+	}
+	return
+}
+
+func (this *Ftp) getDataConn() (res *Response, dataConn net.Conn, err error) {
+	if this.params.Passive {
+		if res, dataConn, err = this.Pasv(); err != nil {
+			return
+		}
+
+	} else {
+		if res, dataConn, err = this.Port(); err != nil {
+			return
+		}
+	}
+
+	return
+}
+
+func (this *Ftp) list(p string) (res []*Response, list string, err error) {
+	if !this.params.KeepAlive {
+		defer this.quit()
+	}
+
+	var dataConn net.Conn
+	var bytes []byte
+	var r *Response
+	res = []*Response{}
+
+	cmd := fmt.Sprintf("LIST -aL %s", p)
+
+	if r, dataConn, err = this.getDataConn(); err != nil {
+		return
+	}
+	defer dataConn.Close()
+	res = append(res, r)
+
+
+	if r, err = this.Command(cmd, 150); err != nil {
+		return
+	}
+	res = append(res, r)
+
+	if r, bytes, err = this.readBytes(dataConn); err != nil {
+		return
+	}
+	res = append(res, r)
+
+	list = string(bytes)
+
+	return
+}
+
+func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *Response, len int64, err error) {
+	var dataConn net.Conn
+	var file *os.File
+	defer dataConn.Close()
+	defer file.Close()
+
+	if this.params.Passive {
+		if c, ok := itf.(net.Conn); ok {
+			dataConn = c
+		} else {
+			err = errors.New("Invalid parameter were bound, Value of the argument 'itf' must be the Type 'net.Conn' when the Passive Mode specified by the Parameter.")
+			return
+		}
+	} else {
+		if listener, ok := itf.(net.Listener); ok {
+			defer listener.Close()
+			if dataConn, err = listener.Accept(); err != nil {
+				return
+			}
+		} else {
+			err = errors.New("Invalid parameter were bound, Value of the argument 'itf' must be the Type 'net.Listener' whern the Active Mode speciffied by the Parameter")
+			return
+		}
+	}
+
+	var r io.ReadCloser = file
+	var w io.WriteCloser = file
+	var rw io.ReadWriteCloser = dataConn
+
+	if this.params.Secure {
+		var conf *tls.Config
+		if conf, err = this.getTLSConfig(); err != nil {
+			return
+		}
+		dataTLS := tls.Client(dataConn, conf)
+		defer dataTLS.Close()
+		rw = dataTLS
+	}
+
+	if direction == DOWNLOAD {
+		r = rw
+	} else if direction == UPLOAD {
+		w = rw
+	} else {
+		err = errors.New("The Argument 'direction' must be the either 'DOWNLOAD' or 'UPLOAD'.")
+		return
+	}
+
+	if len, err = io.Copy(w, r); err != nil {
+		return
+	}
+	var code int
+	var msg string
+	if code, msg, err = this.ctrlConn.ReadResponse(226); err != nil {
+		return
+	}
+	res = &Response{
+		command: "",
+		code:    code,
+		msg:     msg,
+	}
+	return
+}
+
+

@@ -1,148 +1,96 @@
 package sftps
 
 import (
-	"encoding/json"
-	"log"
+	"github.com/pkg/errors"
 )
 
-const (
-	DEBUG = true
-)
-
-type FtpParameter struct {
-	Host        string
-	Port        int
-	ListenPort  int
-	User        string
-	Pass        string
-	Passive     bool
-	Secure      bool
-	AlwaysTrust bool
-	SecureMode  string
-	Cert        string
-	Key         string
-}
-type SftpParameter struct {
-	Host          string
-	Port          int
-	User          string
-	Pass          string
-	UseKey        bool
-	PrivateKey    string
-	UsePassphrase bool
-	Passphrase    string
-}
-type Command struct {
-	Cmd  string
-	Src  string
-	Dest string
+type Response struct {
+	command string
+	code    int
+	msg     string
 }
 
 type Sftps struct {
-	protocol      string
-	ftpParameter  *FtpParameter
-	sftpParameter *SftpParameter
-	command       *Command
+	state    int
+	protocol int
+	recv interface{}
+	isDebug  bool
 }
 
-func NewSftps(proto string, ftpParam *FtpParameter, sftpParam *SftpParameter, cmd *Command) (inst *Sftps) {
-	log.Printf("%s", ftpParam.User)
-	inst = &Sftps{proto, ftpParam, sftpParam, cmd}
-	return
-}
+func New(proto int, param interface{}) (sftps *Sftps, err error) {
+	sftps = new(Sftps)
 
-func (recv *Sftps) Exec() (res interface{}, err error) {
-	log.Printf(recv.protocol)
-	if recv.protocol == "FTP" || recv.protocol == "FTPS" {
-		res, err = recv.ftpCommand()
-	} else if recv.protocol == "SFTP" {
-		recv.sftpCommand()
-	}
-	return
-}
+	if proto == FTP || proto == FTPS {
+		sftps.recv = NewFtp(param.(*FtpParameters))
+	} else if proto == SFTP {
 
-func (recv *Sftps) ftpCommand() (res interface{}, err error) {
-	if recv.command.Cmd == "ConnectTest" {
-		recv.FtpConnectTest()
-	} else if recv.command.Cmd == "GetFileList" {
-		res, err = recv.ftpGetFileList()
 	} else {
-		ftp := NewFTP(recv.ftpParameter, DEBUG)
-		ftp.Connect()
-		ftp.Auth()
-		ftp.BaseCommands()
-
-		funcs := map[string]interface{}{
-			"DownlloadFile":   ftp.DownloadFile,
-			"UploadFile":      ftp.UploadFile,
-			"RemoveFile":      ftp.RemoveFile,
-			"CreateDirectory": ftp.CreateDirectory,
-			"RemoveDirectory": ftp.RemoveDirectory,
-			"Rename":          ftp.Rename,
-		}
-		ftp.Call(funcs, recv.command.Cmd, recv.command)
-	}
-	return
-}
-
-func (recv *Sftps) FtpConnectTest() {
-	ftp := NewFTP(recv.ftpParameter, DEBUG)
-	ftp.Connect()
-	ftp.Auth()
-	Last("ConnectTest", "OK", ftp.CloseAll)
-}
-
-func (recv *Sftps) ftpGetFileList() (list string, err error) {
-	ftp := NewFTP(recv.ftpParameter, DEBUG)
-	err = ftp.Connect()
-	if err != nil {
+		err = errors.New("Invalid parameter were bound. the Protocol must be FTP, FTPS or SFTP")
 		return
 	}
-	ftp.Auth()
-	ftp.BaseCommands()
-	list = ftp.GetList(recv.command.Dest)
-	//Err("GetFileList", err, ftp.CloseAll)
-	//Last("GetFileList", entities, nil)
+	sftps.protocol = proto
+	sftps.state = OFFLINE
 	return
 }
 
-func (recv *Sftps) StringToEntities(raw string) (ents []*Entity, err error) {
-	ents, err = StringToEntities(raw)
-	return
-}
+func (this *Sftps) Connect() (res []*Response, err error) {
 
-func (recv *Sftps) sftpCommand() {
-	if recv.command.Cmd == "ConnectTest" {
-		recv.SftpConnectTest()
-	} else if recv.command.Cmd == "GetFileList" {
-		recv.sftpGetFileList()
-	} else {
-		sftp := NewSFTP(recv.sftpParameter, DEBUG)
-		sftp.ConnectAndAuth()
-
-		funcs := map[string]interface{}{
-			"CreateDirectory": sftp.CreateDirectory,
-			"Rename":          sftp.Rename,
-			"UploadFile":      sftp.UploadFile,
-			"DownloadFile":    sftp.DownloadFile,
+	if this.protocol == FTP || this.protocol == FTPS {
+		var r *Response
+		if r, err = this.recv.(*Ftp).connect(); err != nil {
+			return
 		}
-		sftp.Call(funcs, recv.command.Cmd, recv.command)
+		res = []*Response{}
+		res = append(res, r)
+
+		var rs []*Response
+		if rs, err = this.recv.(*Ftp).auth(); err != nil {
+			return
+		}
+		res = append(res, rs...)
+
+		if rs, err = this.recv.(*Ftp).options(); err != nil {
+			return
+		}
+		res = append(res, rs...)
+	}
+
+	if this.protocol == SFTP {
+		//err := this.Receiver.(*Sftp).ConnectAndAuth()
+	}
+
+	this.state = ONLINE
+	return
+}
+
+func (this *Sftps) Quit() {
+	if this.protocol == FTP || this.protocol == FTPS {
+		this.recv.(*Ftp).quit()
 	}
 }
 
-func (recv *Sftps) SftpConnectTest() {
-	sftp := NewSFTP(recv.sftpParameter, DEBUG)
-	sftp.ConnectAndAuth()
-	Last("ConnectTest", "OK", sftp.CloseAll)
+func (this *Sftps) StringToEntities (raw string) (ents []*Entity, err error) {
+	ents, err = stringToEntities(raw)
+	return
 }
 
-func (recv *Sftps) sftpGetFileList() {
-	sftp := NewSFTP(recv.sftpParameter, DEBUG)
-	sftp.ConnectAndAuth()
-	list := sftp.GetList(recv.command.Dest)
-	entities, err := StringToEntities(list)
-	Err("GetFileList", err, sftp.CloseAll)
-	bytes, err := json.Marshal(entities)
-	Err("GetFileList", err, sftp.CloseAll)
-	Last("GetFileList", string(bytes), nil)
+func (this *Sftps) List(baseDir string) (res []*Response, list string, err error) {
+	if this.state == OFFLINE {
+		err = errors.New("Connection is not established.")
+		return
+	}
+	if this.protocol == FTP || this.protocol == FTPS {
+		var ftp *Ftp
+		if r, ok := this.recv.(*Ftp); ok {
+			ftp = r
+		}
+		if res, list, err = ftp.list(baseDir); err  != nil {
+			return
+		}
+
+		ftp.quit()
+	}
+	return
 }
+
+

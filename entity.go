@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	//"github.com/davecgh/go-spew/spew"
 )
 
 type Permission struct {
@@ -33,7 +32,7 @@ type Entity struct {
 	Name    string
 }
 
-func StringToEntities(raw string) (ents []*Entity, err error) {
+func stringToEntities (raw string) (ents []*Entity, err error) {
 	lines := strings.Split(raw, "\r\n")
 
 	if len(lines) == 1 {
