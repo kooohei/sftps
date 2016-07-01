@@ -2,7 +2,9 @@ package sftps
 
 import (
 	"github.com/pkg/errors"
+	"github.com/davecgh/go-spew/spew"
 )
+
 
 type Response struct {
 	command string
@@ -48,7 +50,7 @@ func (this *Sftps) Connect() (res []*Response, err error) {
 			return
 		}
 		res = append(res, rs...)
-
+	
 		if rs, err = this.recv.(*Ftp).options(); err != nil {
 			return
 		}
@@ -65,6 +67,7 @@ func (this *Sftps) Connect() (res []*Response, err error) {
 
 func (this *Sftps) Quit() {
 	if this.protocol == FTP || this.protocol == FTPS {
+		spew.Dump(this.recv.(*Ftp))
 		this.recv.(*Ftp).quit()
 	}
 }
@@ -87,7 +90,6 @@ func (this *Sftps) List(baseDir string) (res []*Response, list string, err error
 		if res, list, err = ftp.list(baseDir); err  != nil {
 			return
 		}
-
 		ftp.quit()
 	}
 	return

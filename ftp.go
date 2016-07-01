@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	//"github.com/davecgh/go-spew/spew"
+	"github.com/davecgh/go-spew/spew"
 )
 
 type FtpParameters struct {
@@ -75,7 +75,6 @@ func (this *Ftp) connect() (res *Response, err error) {
 	}
 	this.ctrlConn = textproto.NewConn(this.rawConn)
 	if code, msg, err = this.ctrlConn.ReadResponse(220); err != nil {
-
 		return
 	}
 
@@ -85,9 +84,11 @@ func (this *Ftp) connect() (res *Response, err error) {
 		msg:     msg,
 	}
 
-	if this.params.Secure && this.params.SecureMode == IMPLICIT {
-		if err = this.secureUpgrade(); err != nil {
-			return
+	if this.params.Secure {
+		if this.params.SecureMode == IMPLICIT {
+			if err = this.secureUpgrade(); err != nil {
+				return
+			}
 		}
 	}
 
@@ -263,14 +264,16 @@ func (this *Ftp) ds2h(dec string) (hex string, err error) {
 }
 
 func (this *Ftp) h2i(hex string) (res int, err error) {
-	var r int64
-	r, err = strconv.ParseInt(hex, 16, 64)
-	res = int(r)
+	if r, e := strconv.ParseInt(hex, 16, 64); e != nil {
+		return
+	} else {
+		res = int(r)
+	}
 	return
 }
 
 func (this *Ftp) getSplitPorts() (port1 int, port2 int, err error) {
-	hex := fmt.Sprintf("%x", this.params.Port)
+	hex := fmt.Sprintf("%x", this.params.ListenPort)
 
 	switch len(hex) {
 	case 1, 2:
@@ -302,11 +305,14 @@ func (this *Ftp) getSplitPorts() (port1 int, port2 int, err error) {
 	return
 }
 
-func (this *Ftp) Port() (res *Response, dataConn net.Conn, err error) {
+func (this *Ftp) Port() (res *Response, listener net.Listener, err error) {
 	var localIP string = ""
 	if localIP, err = this.getLocalIP(); err != nil {
 		return
 	}
+	spew.Dump(localIP)
+
+
 	ip := strings.Replace(localIP, ".", ",", -1)
 	var p1, p2 int
 	if p1, p2, err = this.getSplitPorts(); err != nil {
@@ -317,16 +323,10 @@ func (this *Ftp) Port() (res *Response, dataConn net.Conn, err error) {
 	if res, err = this.Command(cmd, 200); err != nil {
 		return
 	}
-
-	listener, e := net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.ListenPort))
-	defer listener.Close()
-
-	if e != nil {
+	if listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.ListenPort)); err != nil {
 		return
 	}
-	if dataConn, err = listener.Accept(); err != nil {
-		return
-	}
+
 	return
 }
 
@@ -360,7 +360,25 @@ func (this *Ftp) Pasv() (res *Response, dataConn net.Conn, err error) {
 }
 
 
-func (this *Ftp) readBytes(dataConn net.Conn) (res *Response, bytes []byte, err error) {
+func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err error) {
+	var dataConn net.Conn
+
+	if this.params.Passive {
+		if dc, ok := itf.(net.Conn); ok {
+			dataConn = dc
+		} else {
+			err = errors.New("Invalid parameter were bound, net.Conn is not found.")
+		}
+	} else {
+		if listener, ok := itf.(net.Listener); ok {
+			if dataConn, err = listener.Accept(); err != nil {
+				return
+			}
+		} else {
+			err = errors.New("Invalid parameter were bound, net.Listener is not found.")
+		}
+	}
+
 	defer dataConn.Close()
 	if this.params.Secure {
 		var conf *tls.Config
@@ -397,7 +415,9 @@ func (this *Ftp) readBytes(dataConn net.Conn) (res *Response, bytes []byte, err 
 
 func (this *Ftp) quit() (res *Response, err error) {
 	defer this.ctrlConn.Close()
-	defer this.tlsConn.Close()
+	if this.params.Secure {
+		defer this.tlsConn.Close()
+	}
 	defer this.rawConn.Close()
 
 	if res, err = this.Command("QUIT", 221); err != nil {
@@ -406,46 +426,35 @@ func (this *Ftp) quit() (res *Response, err error) {
 	return
 }
 
-func (this *Ftp) getDataConn() (res *Response, dataConn net.Conn, err error) {
-	if this.params.Passive {
-		if res, dataConn, err = this.Pasv(); err != nil {
-			return
-		}
-
-	} else {
-		if res, dataConn, err = this.Port(); err != nil {
-			return
-		}
-	}
-
-	return
-}
 
 func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 	if !this.params.KeepAlive {
 		defer this.quit()
 	}
 
-	var dataConn net.Conn
+	var itf interface{}
 	var bytes []byte
 	var r *Response
 	res = []*Response{}
 
 	cmd := fmt.Sprintf("LIST -aL %s", p)
 
-	if r, dataConn, err = this.getDataConn(); err != nil {
-		return
+	if this.params.Passive {
+		if r, itf, err = this.Pasv(); err != nil {
+			return
+		}
+	} else {
+		if r, itf, err = this.Port(); err != nil {
+			return
+		}
 	}
-	defer dataConn.Close()
-	res = append(res, r)
-
 
 	if r, err = this.Command(cmd, 150); err != nil {
 		return
 	}
 	res = append(res, r)
 
-	if r, bytes, err = this.readBytes(dataConn); err != nil {
+	if r, bytes, err = this.readBytes(itf); err != nil {
 		return
 	}
 	res = append(res, r)
