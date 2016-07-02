@@ -2,9 +2,8 @@ package sftps
 
 import (
 	"github.com/pkg/errors"
-	"github.com/davecgh/go-spew/spew"
+	//"github.com/davecgh/go-spew/spew"
 )
-
 
 type Response struct {
 	command string
@@ -15,7 +14,7 @@ type Response struct {
 type Sftps struct {
 	state    int
 	protocol int
-	recv interface{}
+	recv     interface{}
 	isDebug  bool
 }
 
@@ -23,7 +22,7 @@ func New(proto int, param interface{}) (sftps *Sftps, err error) {
 	sftps = new(Sftps)
 
 	if proto == FTP || proto == FTPS {
-		sftps.recv = NewFtp(param.(*FtpParameters))
+		sftps.recv = NewFtp(param.(*ftpParameters))
 	} else if proto == SFTP {
 
 	} else {
@@ -50,7 +49,7 @@ func (this *Sftps) Connect() (res []*Response, err error) {
 			return
 		}
 		res = append(res, rs...)
-	
+
 		if rs, err = this.recv.(*Ftp).options(); err != nil {
 			return
 		}
@@ -67,12 +66,11 @@ func (this *Sftps) Connect() (res []*Response, err error) {
 
 func (this *Sftps) Quit() {
 	if this.protocol == FTP || this.protocol == FTPS {
-		spew.Dump(this.recv.(*Ftp))
 		this.recv.(*Ftp).quit()
 	}
 }
 
-func (this *Sftps) StringToEntities (raw string) (ents []*Entity, err error) {
+func (this *Sftps) StringToEntities(raw string) (ents []*Entity, err error) {
 	ents, err = stringToEntities(raw)
 	return
 }
@@ -87,12 +85,10 @@ func (this *Sftps) List(baseDir string) (res []*Response, list string, err error
 		if r, ok := this.recv.(*Ftp); ok {
 			ftp = r
 		}
-		if res, list, err = ftp.list(baseDir); err  != nil {
+		if res, list, err = ftp.list(baseDir); err != nil {
 			return
 		}
 		ftp.quit()
 	}
 	return
 }
-
-

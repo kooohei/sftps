@@ -14,35 +14,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
+	//"log"
 	"github.com/davecgh/go-spew/spew"
 )
 
-type FtpParameters struct {
-	Host        string
-	Port        int
-	ListenPort  int
-	User        string
-	Pass        string
-	Passive     bool
-	KeepAlive   bool
-	Secure      bool
-	AlwaysTrust bool
-	SecureMode  int
-	RootCA      string
-	Cert        string
-	Key         string
-}
 
 type Ftp struct {
 	rawConn  net.Conn
 	tlsConn  *tls.Conn
 	ctrlConn *textproto.Conn
-	params   *FtpParameters
+	params   *ftpParameters
 	State    int
 }
 
-func NewFtp(p *FtpParameters) (ftp *Ftp) {
+func NewFtp(p *ftpParameters) (ftp *Ftp) {
+	spew.Dump(p)
 
 	ftp = new(Ftp)
 	ftp.params = p
@@ -55,11 +41,11 @@ func (this *Ftp) connect() (res *Response, err error) {
 	var code int
 	var msg string
 
-	if ipaddr, err = net.LookupIP(this.params.Host); err != nil {
+	if ipaddr, err = net.LookupIP(this.params.host); err != nil {
 		return
 	}
 
-	addr := fmt.Sprintf("%s:%d", ipaddr[0], this.params.Port)
+	addr := fmt.Sprintf("%s:%d", ipaddr[0], this.params.port)
 
 	dialer := new(net.Dialer)
 	if dialer.Timeout, err = time.ParseDuration(TIMEOUT); err != nil {
@@ -68,12 +54,24 @@ func (this *Ftp) connect() (res *Response, err error) {
 	if dialer.KeepAlive, err = time.ParseDuration(KEEPALIVE); err != nil {
 		return
 	}
-	this.rawConn, err = dialer.Dial("tcp", addr)
-	if err != nil {
 
-		return
+	if this.params.secure && this.params.secureMode == IMPLICIT {
+		var conf *tls.Config
+		if conf, err = this.getTLSConfig(); err != nil {
+			return
+		}
+		if this.tlsConn, err = tls.DialWithDialer(dialer, "tcp", addr, conf); err != nil {
+			return
+		}
+		this.ctrlConn = textproto.NewConn(this.tlsConn)
+	} else {
+		if this.rawConn, err = dialer.Dial("tcp", addr); err != nil {
+			return
+		}
+		this.ctrlConn = textproto.NewConn(this.rawConn)
 	}
-	this.ctrlConn = textproto.NewConn(this.rawConn)
+
+
 	if code, msg, err = this.ctrlConn.ReadResponse(220); err != nil {
 		return
 	}
@@ -84,13 +82,7 @@ func (this *Ftp) connect() (res *Response, err error) {
 		msg:     msg,
 	}
 
-	if this.params.Secure {
-		if this.params.SecureMode == IMPLICIT {
-			if err = this.secureUpgrade(); err != nil {
-				return
-			}
-		}
-	}
+
 
 	this.State = ONLINE
 	return
@@ -124,19 +116,19 @@ func (this *Ftp) getTLSConfig() (conf *tls.Config, err error) {
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 	}
 
-	if this.params.Cert != "" && this.params.Key != "" {
-		if certPair, err = tls.LoadX509KeyPair(this.params.Cert, this.params.Key); err != nil {
+	if this.params.cert != "" && this.params.key != "" {
+		if certPair, err = tls.LoadX509KeyPair(this.params.cert, this.params.key); err != nil {
 			return
 		}
 
 		certPool = x509.NewCertPool()
 
-		if this.params.RootCA != "" {
+		if this.params.rootCA != "" {
 			if rcaPem, err = ioutil.ReadFile("./cert/rcaPem.pem"); err != nil {
 				return
 			}
 
-			if this.params.AlwaysTrust {
+			if this.params.alwaysTrust {
 				if !certPool.AppendCertsFromPEM(rcaPem) {
 					panic("Failed to parse the Root Certificate")
 				}
@@ -148,7 +140,7 @@ func (this *Ftp) getTLSConfig() (conf *tls.Config, err error) {
 		conf.Certificates[0] = certPair
 		conf.ClientCAs = certPool
 	}
-	conf.InsecureSkipVerify = this.params.AlwaysTrust
+	conf.InsecureSkipVerify = this.params.alwaysTrust
 	return
 }
 
@@ -158,7 +150,7 @@ func (this *Ftp) auth() (res []*Response, err error) {
 
 	res = []*Response{}
 
-	if this.params.Secure && this.params.SecureMode == EXPLICIT {
+	if this.params.secure && this.params.secureMode == EXPLICIT {
 		if r, err = this.Command("AUTH TLS", 234); err != nil {
 			return
 		}
@@ -169,12 +161,12 @@ func (this *Ftp) auth() (res []*Response, err error) {
 		}
 	}
 
-	if r, err = this.Command(fmt.Sprintf("USER %s", this.params.User), 331); err != nil {
+	if r, err = this.Command(fmt.Sprintf("USER %s", this.params.user), 331); err != nil {
 		return
 	}
 	res = append(res, r)
 
-	if r, err = this.Command(fmt.Sprintf("PASS %s", this.params.Pass), 230); err != nil {
+	if r, err = this.Command(fmt.Sprintf("PASS %s", this.params.pass), 230); err != nil {
 		return
 	}
 	res = append(res, r)
@@ -221,7 +213,7 @@ func (this *Ftp) options() (res []*Response, err error) {
 	}
 	res = append(res, r)
 
-	if this.params.Secure {
+	if this.params.secure {
 		if r, err = this.Command("PROT P", 200); err != nil {
 			return
 		}
@@ -273,7 +265,7 @@ func (this *Ftp) h2i(hex string) (res int, err error) {
 }
 
 func (this *Ftp) getSplitPorts() (port1 int, port2 int, err error) {
-	hex := fmt.Sprintf("%x", this.params.ListenPort)
+	hex := fmt.Sprintf("%x", this.params.listenPort)
 
 	switch len(hex) {
 	case 1, 2:
@@ -323,7 +315,7 @@ func (this *Ftp) Port() (res *Response, listener net.Listener, err error) {
 	if res, err = this.Command(cmd, 200); err != nil {
 		return
 	}
-	if listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.ListenPort)); err != nil {
+	if listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", localIP, this.params.listenPort)); err != nil {
 		return
 	}
 
@@ -335,7 +327,7 @@ func (this *Ftp) Pasv() (res *Response, dataConn net.Conn, err error) {
 		return
 	}
 	var ip []net.IP
-	if ip, err = net.LookupIP(this.params.Host); err != nil {
+	if ip, err = net.LookupIP(this.params.host); err != nil {
 		return
 	}
 	reg := regexp.MustCompile("([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+?),([0-9]+)")
@@ -363,7 +355,7 @@ func (this *Ftp) Pasv() (res *Response, dataConn net.Conn, err error) {
 func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err error) {
 	var dataConn net.Conn
 
-	if this.params.Passive {
+	if this.params.passive {
 		if dc, ok := itf.(net.Conn); ok {
 			dataConn = dc
 		} else {
@@ -380,7 +372,7 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 	}
 
 	defer dataConn.Close()
-	if this.params.Secure {
+	if this.params.secure {
 		var conf *tls.Config
 		if conf, err = this.getTLSConfig(); err != nil {
 			return
@@ -415,10 +407,12 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 
 func (this *Ftp) quit() (res *Response, err error) {
 	defer this.ctrlConn.Close()
-	if this.params.Secure {
+	if this.params.secure {
 		defer this.tlsConn.Close()
 	}
-	defer this.rawConn.Close()
+	if this.params.secureMode != IMPLICIT {
+		defer this.rawConn.Close()
+	}
 
 	if res, err = this.Command("QUIT", 221); err != nil {
 		return
@@ -428,7 +422,7 @@ func (this *Ftp) quit() (res *Response, err error) {
 
 
 func (this *Ftp) list(p string) (res []*Response, list string, err error) {
-	if !this.params.KeepAlive {
+	if !this.params.keepAlive {
 		defer this.quit()
 	}
 
@@ -439,7 +433,7 @@ func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 
 	cmd := fmt.Sprintf("LIST -aL %s", p)
 
-	if this.params.Passive {
+	if this.params.passive {
 		if r, itf, err = this.Pasv(); err != nil {
 			return
 		}
@@ -448,6 +442,7 @@ func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 			return
 		}
 	}
+	res = append(res, r)
 
 	if r, err = this.Command(cmd, 150); err != nil {
 		return
@@ -470,7 +465,7 @@ func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *
 	defer dataConn.Close()
 	defer file.Close()
 
-	if this.params.Passive {
+	if this.params.passive {
 		if c, ok := itf.(net.Conn); ok {
 			dataConn = c
 		} else {
@@ -493,7 +488,7 @@ func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *
 	var w io.WriteCloser = file
 	var rw io.ReadWriteCloser = dataConn
 
-	if this.params.Secure {
+	if this.params.secure {
 		var conf *tls.Config
 		if conf, err = this.getTLSConfig(); err != nil {
 			return
