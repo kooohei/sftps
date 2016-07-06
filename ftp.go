@@ -297,7 +297,7 @@ func (this *Ftp) getSplitPorts() (port1 int, port2 int, err error) {
 	return
 }
 
-func (this *Ftp) Port() (res *Response, listener net.Listener, err error) {
+func (this *Ftp) port() (res *Response, listener net.Listener, err error) {
 	var localIP string = ""
 	if localIP, err = this.getLocalIP(); err != nil {
 		return
@@ -322,7 +322,7 @@ func (this *Ftp) Port() (res *Response, listener net.Listener, err error) {
 	return
 }
 
-func (this *Ftp) Pasv() (res *Response, dataConn net.Conn, err error) {
+func (this *Ftp) pasv() (res *Response, dataConn net.Conn, err error) {
 	if res, err = this.Command("PASV", 227); err != nil {
 		return
 	}
@@ -350,7 +350,6 @@ func (this *Ftp) Pasv() (res *Response, dataConn net.Conn, err error) {
 	dataConn, err = net.Dial("tcp", param)
 	return
 }
-
 
 func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err error) {
 	var dataConn net.Conn
@@ -406,7 +405,9 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 }
 
 func (this *Ftp) quit() (res *Response, err error) {
+
 	defer this.ctrlConn.Close()
+
 	if this.params.secure {
 		defer this.tlsConn.Close()
 	}
@@ -419,7 +420,6 @@ func (this *Ftp) quit() (res *Response, err error) {
 	}
 	return
 }
-
 
 func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 	if !this.params.keepAlive {
@@ -434,11 +434,11 @@ func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 	cmd := fmt.Sprintf("LIST -aL %s", p)
 
 	if this.params.passive {
-		if r, itf, err = this.Pasv(); err != nil {
+		if r, itf, err = this.pasv(); err != nil {
 			return
 		}
 	} else {
-		if r, itf, err = this.Port(); err != nil {
+		if r, itf, err = this.port(); err != nil {
 			return
 		}
 	}
@@ -458,6 +458,35 @@ func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 
 	return
 }
+
+func (this *Ftp) mkdir(p string) (res *Response, err error) {
+	res, err = this.Command(fmt.Sprintf("MKD %s", p), 257)
+	return
+}
+func (this *Ftp) rmdir(p string) (res *Response, err error) {
+	res, err = this.Command(fmt.Sprintf("RMD %s", p), 250)
+	return
+}
+
+func (this *Ftp) delete(p string) (res *Response, err error) {
+	res, err = this.Command(fmt.Sprintf("DELE %s", p), 200)
+	return
+}
+
+func (this *Ftp) rename(old string, new string) (res []*Response, err error) {
+	r := &Response{}
+	if r, err = this.Command(fmt.Sprintf("RNFR %s", old), 350); err !=  nil {
+		return
+	}
+	res = append(res, r)
+	if r, err = this.Command(fmt.Sprintf("RNTO %s", new), 250); err != nil {
+		return
+	}
+	res = append(res, r)
+	return
+}
+
+
 
 func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *Response, len int64, err error) {
 	var dataConn net.Conn
