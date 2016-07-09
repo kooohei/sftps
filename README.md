@@ -1,5 +1,5 @@
 # SFTPS
-sftps is an Package of the Golang for the FTP, FTPS and SFTP.
+sftps is an Package of the Golang for the FTP, FTPS and SFTP Clients.
 
 
 ### Example ###
