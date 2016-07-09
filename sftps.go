@@ -2,10 +2,9 @@ package sftps
 
 import (
 	"errors"
-//"github.com/davecgh/go-spew/spew"
 )
 
-type Response struct {
+type FtpResponse struct {
 	command string
 	code    int
 	msg     string
@@ -26,13 +25,21 @@ func New(proto int, param interface{}) (sftps *Sftps, err error) {
 		var parameter *ftpParameters
 		if p, ok := param.(*ftpParameters); ok {
 			parameter = p
-			sftps.recv = NewFtp(parameter)
+			sftps.recv = newFtp(parameter)
+			sftps.keepalive = parameter.keepAlive
 		} else {
-			err = errors.New("'param' could not cast to the *ftpParameter")
+			err = errors.New("the 'param' could not cast to the *ftpParameters type.")
 			return
 		}
 	} else if proto == SFTP {
-
+		var parameter *sftpParameters
+		if p, ok := param.(*sftpParameters); ok {
+			parameter = p
+			sftps.recv = newSftp(parameter)
+			sftps.keepalive = parameter.keepAlive
+		} else {
+			err = errors.New("the 'param' could not cast to the *sftpParameters type.")
+		}
 	} else {
 		err = errors.New("Invalid parameter were bound. the Protocol must be FTP, FTPS or SFTP")
 		return
@@ -42,17 +49,17 @@ func New(proto int, param interface{}) (sftps *Sftps, err error) {
 	return
 }
 
-func (this *Sftps) Connect() (res []*Response, err error) {
+func (this *Sftps) Connect() (res []*FtpResponse, err error) {
 
 	if this.protocol == FTP || this.protocol == FTPS {
-		var r *Response
+		var r *FtpResponse
 		if r, err = this.recv.(*Ftp).connect(); err != nil {
 			return
 		}
-		res = []*Response{}
+		res = []*FtpResponse{}
 		res = append(res, r)
 
-		var rs []*Response
+		var rs []*FtpResponse
 		if rs, err = this.recv.(*Ftp).auth(); err != nil {
 			return
 		}
@@ -62,20 +69,30 @@ func (this *Sftps) Connect() (res []*Response, err error) {
 			return
 		}
 		res = append(res, rs...)
-	}
-
+	} else
 	if this.protocol == SFTP {
-		//err := this.Receiver.(*Sftp).ConnectAndAuth()
+		if err = this.recv.(*SecureFtp).connect(); err != nil {
+			return
+		}
 	}
 
 	this.state = ONLINE
 	return
 }
 
-func (this *Sftps) Quit() {
+func (this *Sftps) Quit() (res *FtpResponse, err error) {
 	if this.protocol == FTP || this.protocol == FTPS {
-		this.recv.(*Ftp).quit()
+		if res, err = this.recv.(*Ftp).quit(); err != nil {
+			return
+		}
+	} else
+	if this.protocol == SFTP {
+		if err = this.recv.(*SecureFtp).quit(); err != nil {
+			return
+		}
 	}
+	this.state = OFFLINE
+	return
 }
 
 func (this *Sftps) StringToEntities(raw string) (ents []*Entity, err error) {
@@ -83,73 +100,248 @@ func (this *Sftps) StringToEntities(raw string) (ents []*Entity, err error) {
 	return
 }
 
-func (this *Sftps) List(baseDir string) (res []*Response, list string, err error) {
+func (this *Sftps) List(baseDir string) (res []*FtpResponse, list string, err error) {
+
 	if this.state == OFFLINE {
 		err = errors.New("Connection is not established.")
 		return
 	}
 	if this.protocol == FTP || this.protocol == FTPS {
 		var ftp *Ftp
-		if r, ok := this.recv.(*Ftp); ok {
-			ftp = r
-		} else {
-			err = errors.New("Internal error. Error occurred in the Receiver.")
-			return
+		if recv, ok := this.recv.(*Ftp); ok {
+			ftp = recv
 		}
 		if res, list, err = ftp.list(baseDir); err != nil {
-			if !this.keepalive {
-				ftp.quit()
-			}
 			return
+		} else {
+			var r *FtpResponse
+			if !this.keepalive {
+				if r, err = ftp.quit(); err != nil {
+					return
+				}
+			}
+			res = append(res, r)
+		}
+	} else
+	if this.protocol == SFTP {
+		var sftp *SecureFtp
+		if recv, ok := this.recv.(*SecureFtp); ok {
+			sftp = recv
+		}
+		if list, err = sftp.list(baseDir); err != nil {
+			return
+		}
+
+		if !this.keepalive {
+			if err = sftp.quit(); err != nil {
+				return
+			}
 		}
 	}
 	return
 }
 
 
-func (this *Sftps) Mkdir(p string) (res *Response, err error) {
+func (this *Sftps) Mkdir(p string) (res []*FtpResponse, err error) {
 	if this.state == OFFLINE {
 		err = errors.New("Connection is not established.")
 		return
 	}
 	if this.protocol == FTP || this.protocol == FTPS {
 		var ftp *Ftp
-		if r, ok := this.recv.(*Ftp); ok {
-			ftp = r
-		} else {
-			err = errors.New("Internal error. Error occurred in the Receiver.")
+		var r *FtpResponse
+		res = new([]*FtpResponse)
+		if recv, ok := this.recv.(*Ftp); ok {
+			ftp = recv
+		}
+		if r, err = ftp.mkdir(p); err != nil {
+			return
+		}
+		res = append(res, r)
+
+		if !this.keepalive {
+			if r, err = ftp.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+		}
+	} else
+	if this.protocol == SFTP {
+		var sftp *SecureFtp
+		if recv, ok := this.recv.(*SecureFtp); ok {
+			sftp = recv
+		}
+		if err = sftp.mkdir(p); err != nil {
 			return
 		}
 
-		if res, err = ftp.mkdir(p); err != nil {
-			if !this.keepalive {
-				ftp.quit()
+		if !this.keepalive {
+			if err = sftp.quit(); err != nil {
+				return
 			}
-			return
 		}
 	}
 	return
 }
 
-func (this *Sftps) Rmdir(p string) (res *Response, err error) {
+func (this *Sftps) Rmdir(p string) (res []*FtpResponse, err error) {
 	if this.state == OFFLINE {
 		err = errors.New("Connection is not established.")
 		return
 	}
 	if this.protocol == FTP || this.protocol == FTPS {
+		res = new([]*FtpResponse)
+		var r *FtpResponse
 		var ftp *Ftp
-		if r, ok := this.recv.(*Ftp); ok {
-			ftp = r
-		} else {
-			err = errors.New("Internal error. Error occurred in the Receiver.")
+		if recv, ok := this.recv.(*Ftp); ok {
+			ftp = recv
+		}
+		if r, err = ftp.rmdir(p); err != nil {
 			return
 		}
+		res = append(res, r)
 
-		if res, err = ftp.rmdir(p); err != nil {
-			if !this.keepalive {
-				ftp.quit()
+		if !this.keepalive {
+			if r, err = ftp.quit(); err != nil {
+				return
 			}
+			res = append(res, r)
+		}
+	} else
+	if this.protocol == SFTP {
+		var sftp *SecureFtp
+		if recv, ok := this.recv.(*SecureFtp); ok {
+			sftp = recv
+		}
+		if err = sftp.remove(p); err != nil {
 			return
+		}
+		if !this.keepalive {
+			if err = sftp.quit(); err != nil {
+				return
+			}
+		}
+	}
+	return
+}
+
+func (this *Sftps) Rename(old string, new string) (res []*FtpResponse, err error) {
+	if this.state == OFFLINE {
+		err = errors.New("Connection is not established")
+		return
+	}
+
+	if this.protocol == FTP || this.protocol == FTPS {
+		var ftp *Ftp
+		if recv, ok := this.recv.(*Ftp); ok {
+			ftp = recv
+		}
+		if res, err = ftp.rename(old, new); err != nil {
+			return
+		}
+		if !this.keepalive {
+			var r *FtpResponse
+			if r, err = ftp.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+		}
+	} else
+	if this.protocol == SFTP {
+		var sftp *SecureFtp
+		if recv, ok := this.recv.(*SecureFtp); ok {
+			sftp = recv
+		}
+		if err = sftp.rename(old, new); err != nil {
+			return
+		}
+		if !this.keepalive {
+			if err = sftp.quit(); err != nil {
+				return
+			}
+		}
+	}
+	return
+}
+
+/**
+	parameter's explain. local is the local path for the file, whether remote.
+ */
+func (this *Sftps) Upload(local string, remote string) (res []*FtpResponse, len int64, err error) {
+	if this.state == OFFLINE {
+		err = errors.New("Connection is not established")
+		return
+	}
+
+	if this.protocol == FTP || this.protocol == FTPS {
+		var ftp *Ftp
+		var r *FtpResponse
+
+		if recv, ok := this.recv.(*Ftp); ok {
+			ftp = recv
+		}
+		if res, len, err = ftp.upload(local, remote); err != nil {
+			return
+		}
+		if !this.keepalive {
+			if r, err = ftp.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+		}
+	} else
+	if this.protocol == SFTP {
+		var sftp *SecureFtp
+		if recv, ok := this.recv.(*SecureFtp); ok {
+			sftp = recv
+		}
+		if len, err = sftp.upload(local, remote); err != nil {
+			return
+		}
+		if !this.keepalive {
+			if err = sftp.quit(); err != nil {
+				return
+			}
+		}
+	}
+	return
+}
+
+func (this *Sftps) Download(local string, remote string) (res []*FtpResponse, len int64, err error) {
+	if this.state == OFFLINE {
+		err = errors.New("Connection is not established")
+		return
+	}
+
+	if this.protocol == FTP || this.protocol == FTPS {
+		var ftp *Ftp
+		var r *FtpResponse
+
+		if recv, ok := this.recv.(*Ftp); ok {
+			ftp = recv
+		}
+		if res, len, err = ftp.download(local, remote); err != nil {
+			return
+		}
+		if !this.keepalive {
+			if r, err = ftp.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+		}
+	} else
+	if this.protocol == SFTP {
+		var sftp *SecureFtp
+		if recv, ok := this.recv.(*SecureFtp); ok {
+			sftp = recv
+		}
+		if len, err = sftp.download(local, remote); err != nil {
+			return
+		}
+		if !this.keepalive {
+			if err = sftp.quit(); err != nil {
+				return
+			}
 		}
 	}
 	return

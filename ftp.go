@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 	//"log"
+	//"github.com/davecgh/go-spew/spew"
 	"github.com/davecgh/go-spew/spew"
 )
 
@@ -27,8 +28,8 @@ type Ftp struct {
 	State    int
 }
 
-func NewFtp(p *ftpParameters) (ftp *Ftp) {
-	spew.Dump(p)
+func newFtp(p *ftpParameters) (ftp *Ftp) {
+	//spew.Dump(p)
 
 	ftp = new(Ftp)
 	ftp.params = p
@@ -36,7 +37,7 @@ func NewFtp(p *ftpParameters) (ftp *Ftp) {
 	return
 }
 
-func (this *Ftp) connect() (res *Response, err error) {
+func (this *Ftp) connect() (res *FtpResponse, err error) {
 	var ipaddr []net.IP
 	var code int
 	var msg string
@@ -54,7 +55,6 @@ func (this *Ftp) connect() (res *Response, err error) {
 	if dialer.KeepAlive, err = time.ParseDuration(KEEPALIVE); err != nil {
 		return
 	}
-
 	if this.params.secure && this.params.secureMode == IMPLICIT {
 		var conf *tls.Config
 		if conf, err = this.getTLSConfig(); err != nil {
@@ -70,13 +70,11 @@ func (this *Ftp) connect() (res *Response, err error) {
 		}
 		this.ctrlConn = textproto.NewConn(this.rawConn)
 	}
-
-
 	if code, msg, err = this.ctrlConn.ReadResponse(220); err != nil {
 		return
 	}
 
-	res = &Response{
+	res = &FtpResponse{
 		command: "",
 		code:    code,
 		msg:     msg,
@@ -144,11 +142,11 @@ func (this *Ftp) getTLSConfig() (conf *tls.Config, err error) {
 	return
 }
 
-func (this *Ftp) auth() (res []*Response, err error) {
+func (this *Ftp) auth() (res []*FtpResponse, err error) {
 
-	var r *Response
+	var r *FtpResponse
 
-	res = []*Response{}
+	res = []*FtpResponse{}
 
 	if this.params.secure && this.params.secureMode == EXPLICIT {
 		if r, err = this.Command("AUTH TLS", 234); err != nil {
@@ -174,8 +172,7 @@ func (this *Ftp) auth() (res []*Response, err error) {
 	return
 }
 
-
-func (this *Ftp) Command(cmd string, code int) (res *Response, err error) {
+func (this *Ftp) Command(cmd string, code int) (res *FtpResponse, err error) {
 	var c int
 	var m string
 
@@ -187,7 +184,7 @@ func (this *Ftp) Command(cmd string, code int) (res *Response, err error) {
 		return
 	}
 
-	res = &Response{
+	res = &FtpResponse{
 		command: cmd,
 		code:    c,
 		msg:     m,
@@ -195,12 +192,12 @@ func (this *Ftp) Command(cmd string, code int) (res *Response, err error) {
 	return
 }
 
-func (this *Ftp) options() (res []*Response, err error) {
-	var r *Response
+func (this *Ftp) options() (res []*FtpResponse, err error) {
+	var r *FtpResponse
 	if r, err = this.Command("SYST", 215); err != nil {
 		return
 	}
-	res = []*Response{}
+	res = []*FtpResponse{}
 	res = append(res, r)
 
 	if r, err = this.Command("FEAT", 211); err != nil {
@@ -225,7 +222,6 @@ func (this *Ftp) options() (res []*Response, err error) {
 	res = append(res, r)
 	return
 }
-
 
 func (this *Ftp) getLocalIP() (ip string, err error) {
 	var addrs []net.Addr
@@ -297,13 +293,11 @@ func (this *Ftp) getSplitPorts() (port1 int, port2 int, err error) {
 	return
 }
 
-func (this *Ftp) port() (res *Response, listener net.Listener, err error) {
+func (this *Ftp) port() (res *FtpResponse, listener net.Listener, err error) {
 	var localIP string = ""
 	if localIP, err = this.getLocalIP(); err != nil {
 		return
 	}
-	spew.Dump(localIP)
-
 
 	ip := strings.Replace(localIP, ".", ",", -1)
 	var p1, p2 int
@@ -322,7 +316,7 @@ func (this *Ftp) port() (res *Response, listener net.Listener, err error) {
 	return
 }
 
-func (this *Ftp) pasv() (res *Response, dataConn net.Conn, err error) {
+func (this *Ftp) pasv() (res *FtpResponse, dataConn net.Conn, err error) {
 	if res, err = this.Command("PASV", 227); err != nil {
 		return
 	}
@@ -347,11 +341,12 @@ func (this *Ftp) pasv() (res *Response, dataConn net.Conn, err error) {
 		return
 	}
 	param := fmt.Sprintf("%s:%d", ip[0], port)
+
 	dataConn, err = net.Dial("tcp", param)
 	return
 }
 
-func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err error) {
+func (this *Ftp) readBytes(itf interface{}) (res *FtpResponse, bytes []byte, err error) {
 	var dataConn net.Conn
 
 	if this.params.passive {
@@ -359,7 +354,9 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 			dataConn = dc
 		} else {
 			err = errors.New("Invalid parameter were bound, net.Conn is not found.")
+			return
 		}
+
 	} else {
 		if listener, ok := itf.(net.Listener); ok {
 			if dataConn, err = listener.Accept(); err != nil {
@@ -367,6 +364,7 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 			}
 		} else {
 			err = errors.New("Invalid parameter were bound, net.Listener is not found.")
+			return
 		}
 	}
 
@@ -396,7 +394,7 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 		err = e
 		return
 	}
-	res = &Response{
+	res = &FtpResponse{
 		command: "",
 		code:    c,
 		msg:     m,
@@ -404,7 +402,7 @@ func (this *Ftp) readBytes(itf interface{}) (res *Response, bytes []byte, err er
 	return
 }
 
-func (this *Ftp) quit() (res *Response, err error) {
+func (this *Ftp) quit() (res *FtpResponse, err error) {
 
 	defer this.ctrlConn.Close()
 
@@ -421,15 +419,24 @@ func (this *Ftp) quit() (res *Response, err error) {
 	return
 }
 
-func (this *Ftp) list(p string) (res []*Response, list string, err error) {
+func (this *Ftp) list(p string) (res []*FtpResponse, list string, err error) {
+	res = []*FtpResponse{}
+
 	if !this.params.keepAlive {
-		defer this.quit()
+		defer func () {
+			var r *FtpResponse
+			if r, err = this.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+			return
+		}()
 	}
 
 	var itf interface{}
 	var bytes []byte
-	var r *Response
-	res = []*Response{}
+	var r *FtpResponse
+	res = []*FtpResponse{}
 
 	cmd := fmt.Sprintf("LIST -aL %s", p)
 
@@ -459,22 +466,103 @@ func (this *Ftp) list(p string) (res []*Response, list string, err error) {
 	return
 }
 
-func (this *Ftp) mkdir(p string) (res *Response, err error) {
+func (this *Ftp) download(local string, remote string) (res []*FtpResponse, len int64, err error) {
+	res = []*FtpResponse{}
+	if !this.params.keepAlive {
+		defer func() {
+			var r *FtpResponse
+			if r, err = this.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+			return
+		}()
+	}
+
+	var itf interface{}
+	var r *FtpResponse
+
+	if this.params.passive {
+		if r, itf, err = this.pasv(); err != nil {
+			return
+		}
+	} else {
+		if r, itf, err = this.port(); err != nil {
+			return
+		}
+	}
+	res = append(res, r)
+	var cmd = fmt.Sprintf("RETR %s", remote)
+	if r, err = this.Command(cmd, 150); err != nil {
+		spew.Dump(err)
+		return
+	}
+	res = append(res, r)
+
+	if r, len, err = this.fileTransfer(DOWNLOAD, local, itf); err != nil {
+		return
+	}
+	res = append(res, r)
+	return
+}
+
+func (this *Ftp) upload(local string, remote string) (res []*FtpResponse, len int64, err error) {
+	res = []*FtpResponse{}
+	if !this.params.keepAlive {
+		defer func() {
+			var r *FtpResponse
+			if r, err = this.quit(); err != nil {
+				return
+			}
+			res = append(res, r)
+			return
+		}()
+	}
+
+	var itf interface{}
+	var r *FtpResponse
+
+	if this.params.passive {
+		if r, itf, err = this.pasv(); err != nil {
+			return
+		}
+	} else {
+		if r, itf, err = this.port(); err != nil {
+			return
+		}
+	}
+	res = append(res, r)
+	var cmd = fmt.Sprintf("STOR %s", remote)
+	if r, err = this.Command(cmd, 150); err != nil {
+		spew.Dump(err)
+		return
+	}
+	res = append(res, r)
+
+	if r, len, err = this.fileTransfer(UPLOAD, local, itf); err != nil {
+		return
+	}
+	res = append(res, r)
+	return
+}
+
+func (this *Ftp) mkdir(p string) (res *FtpResponse, err error) {
 	res, err = this.Command(fmt.Sprintf("MKD %s", p), 257)
 	return
 }
-func (this *Ftp) rmdir(p string) (res *Response, err error) {
+
+func (this *Ftp) rmdir(p string) (res *FtpResponse, err error) {
 	res, err = this.Command(fmt.Sprintf("RMD %s", p), 250)
 	return
 }
 
-func (this *Ftp) delete(p string) (res *Response, err error) {
+func (this *Ftp) delete(p string) (res *FtpResponse, err error) {
 	res, err = this.Command(fmt.Sprintf("DELE %s", p), 200)
 	return
 }
 
-func (this *Ftp) rename(old string, new string) (res []*Response, err error) {
-	r := &Response{}
+func (this *Ftp) rename(old, new string) (res []*FtpResponse, err error) {
+	r := &FtpResponse{}
 	if r, err = this.Command(fmt.Sprintf("RNFR %s", old), 350); err !=  nil {
 		return
 	}
@@ -488,15 +576,15 @@ func (this *Ftp) rename(old string, new string) (res []*Response, err error) {
 
 
 
-func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *Response, len int64, err error) {
+
+func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *FtpResponse, len int64, err error) {
+
 	var dataConn net.Conn
-	var file *os.File
-	defer dataConn.Close()
-	defer file.Close()
 
 	if this.params.passive {
 		if c, ok := itf.(net.Conn); ok {
 			dataConn = c
+			defer dataConn.Close()
 		} else {
 			err = errors.New("Invalid parameter were bound, Value of the argument 'itf' must be the Type 'net.Conn' when the Passive Mode specified by the Parameter.")
 			return
@@ -513,8 +601,8 @@ func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *
 		}
 	}
 
-	var r io.ReadCloser = file
-	var w io.WriteCloser = file
+	var r io.ReadCloser
+	var w io.WriteCloser
 	var rw io.ReadWriteCloser = dataConn
 
 	if this.params.secure {
@@ -528,8 +616,15 @@ func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *
 	}
 
 	if direction == DOWNLOAD {
+		if w, err = os.Create(uri); err != nil {
+			return
+		}
 		r = rw
 	} else if direction == UPLOAD {
+		spew.Dump("UPLOAD")
+		if r, err = os.Open(uri); err != nil {
+			return
+		}
 		w = rw
 	} else {
 		err = errors.New("The Argument 'direction' must be the either 'DOWNLOAD' or 'UPLOAD'.")
@@ -539,12 +634,15 @@ func (this *Ftp) fileTransfer(direction int, uri string, itf interface{}) (res *
 	if len, err = io.Copy(w, r); err != nil {
 		return
 	}
+	r.Close()
+	w.Close()
+
 	var code int
 	var msg string
 	if code, msg, err = this.ctrlConn.ReadResponse(226); err != nil {
 		return
 	}
-	res = &Response{
+	res = &FtpResponse{
 		command: "",
 		code:    code,
 		msg:     msg,
