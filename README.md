@@ -87,6 +87,7 @@ if res, list, err = ftp.List("."); err != nil {
 ```
 
 ```golang
+/* SFTP */
 if list, err = sftp.List("."); err != nil {
   return
 }
