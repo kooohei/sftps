@@ -4,14 +4,14 @@ sftps is an Package of the Golang for the FTP, FTPS and SFTP.
 
 ### Example ###
 
-1 Import the package "github.com/kooohei/sftps"
+###1 Import the package "github.com/kooohei/sftps"
 ```golang
 import (
   "github.com/kooohei/sftps"
 )
 ```
 
-2  Create the parameters.
+###2  Create the parameters.
 ```golang
 /*
   FTP, FTPS
@@ -30,7 +30,7 @@ param := sftps.NewSftpParameters("[host]", [port], "[username]", "[password]", [
 // param.Keys("[path to the private key]", [bool for the use passphrase to the Key], "[passphrase]")
 ```
 
-3  Create the Receiver
+###3 Create the Receiver
 
 ```golang
 /* FTP, FTPS */
@@ -51,7 +51,7 @@ if sftp, err = sftps.New(sftps.SFTP, param); err != nil {
 }
 ```
 
-4 Connect to Server
+###4 Connect to Server
 
 ```golang
 /* FTP, FTPS */
@@ -73,7 +73,7 @@ if err := sftp.Connect(); err != nil {
 ```
 
 
-5 Execute Commands
+###5 Execute Commands
 
 ##### Get the File List #####
 ```golang
@@ -150,8 +150,6 @@ if err = sftp.Rmdir("testDir"); err != nil {
   return
 }
 ```
-
-
 
 ##### Upload File #####
 ```golang
